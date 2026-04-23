@@ -1,0 +1,1923 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>هندسة السيارات - نظام إدارة الورشة (CRM)</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800;900&display=swap" rel="stylesheet">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Cairo', 'sans-serif'],
+                    },
+                    colors: {
+                        navy: {
+                            50: '#f0f4f8',
+                            100: '#d9e2ec',
+                            800: '#1e3a8a',
+                            900: '#0f172a',
+                        },
+                        brand: '#2563eb',
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        body { font-family: 'Cairo', sans-serif; background-color: #f8fafc; color: #1e293b; overflow-x: hidden; }
+        .sidebar-scroll::-webkit-scrollbar { width: 6px; }
+        .sidebar-scroll::-webkit-scrollbar-track { background: transparent; }
+        .sidebar-scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+        .main-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+        .main-scroll::-webkit-scrollbar-track { background: #f1f5f9; }
+        .main-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        
+        /* Custom Input Styles */
+        input, select, textarea { transition: all 0.2s; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
+        
+        /* Table Styles */
+        .crm-table th { background-color: #f8fafc; color: #475569; font-weight: 600; text-transform: uppercase; font-size: 0.85rem; letter-spacing: 0.05em; padding: 12px 16px; text-align: right; border-bottom: 2px solid #e2e8f0; white-space: nowrap; }
+        .crm-table td { padding: 12px 16px; border-bottom: 1px solid #e2e8f0; vertical-align: middle; white-space: nowrap;}
+        .crm-table tr:hover { background-color: #f1f5f9; }
+
+        /* Animation */
+        @keyframes slideIn { from { transform: translateY(-10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .animate-slide-in { animation: slideIn 0.3s ease-out forwards; }
+        .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+        /* Print Styles */
+        @media print {
+            body * { visibility: hidden; }
+            #printable-area, #printable-area * { visibility: visible; }
+            #printable-area { position: absolute; left: 0; top: 0; width: 100%; direction: rtl; background: white; padding: 10mm; box-shadow: none; border: none; margin: 0; color: #000; }
+            .print-hide { display: none !important; }
+            .print-break-inside-avoid { break-inside: avoid; }
+            @page { size: A4; margin: 5mm; }
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        // --- Utility Functions ---
+        const formatMoney = (amount) => new Intl.NumberFormat('ar-IQ').format(amount || 0) + ' د.ع';
+        const formatDate = (dateString) => {
+            if(!dateString) return '-';
+            return new Date(dateString).toLocaleDateString('ar-IQ', { year: 'numeric', month: 'short', day: 'numeric' });
+        };
+        const generateWhatsAppLink = (phone, msg = "") => {
+            if (!phone) return '#';
+            let cleanPhone = phone.replace(/\D/g, '');
+            if (cleanPhone.startsWith('0')) cleanPhone = '964' + cleanPhone.substring(1);
+            return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`;
+        };
+        const exportToExcelCSV = (filename, headers, rows) => {
+            let csvContent = "\uFEFF" + headers.join(",") + "\n";
+            rows.forEach(row => {
+                let csvRow = row.map(val => {
+                    let str = String(val !== undefined && val !== null ? val : '');
+                    if (str.includes(',') || str.includes('\n') || str.includes('"')) return `"${str.replace(/"/g, '""')}"`;
+                    return str;
+                });
+                csvContent += csvRow.join(",") + "\n";
+            });
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            link.click();
+        };
+
+        // --- Gemini API Function ---
+        const generateWithGemini = async (prompt, systemInstruction = "") => {
+            const apiKey = "";
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+            const maxRetries = 5;
+            const delays = [1000, 2000, 4000, 8000, 16000];
+
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], systemInstruction: { parts: [{ text: systemInstruction }] } })
+                    });
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    const data = await response.json();
+                    return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                } catch (error) {
+                    if (i === maxRetries - 1) return "عذراً، تعذر الاتصال بالذكاء الاصطناعي حالياً. يرجى المحاولة لاحقاً.";
+                    await new Promise(resolve => setTimeout(resolve, delays[i]));
+                }
+            }
+        };
+
+        // --- Icons ---
+        const Icons = {
+            Dashboard: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path></svg>,
+            Users: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>,
+            Wrench: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>,
+            History: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>,
+            Clock: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>,
+            Message: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>,
+            Star: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"></path></svg>,
+            Gift: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v13m0-13V6a2 2 0 112 2h-2zm0 0V5.5A2.5 2.5 0 109.5 8H12zm-7 4h14M5 12a2 2 0 110-4h14a2 2 0 110 4M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"></path></svg>,
+            Report: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>,
+            Settings: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>,
+            Search: () => <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>,
+            Plus: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>,
+            Check: () => <svg className="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>,
+            X: () => <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>,
+            Back: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>,
+            Phone: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"></path></svg>,
+            Car: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path></svg>,
+            Download: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>,
+            FileText: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>,
+            Menu: () => <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>,
+            LogOut: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>,
+            Trash: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>,
+        };
+
+        // --- Reusable UI Components ---
+        const Modal = ({ title, isOpen, onClose, children, size = "max-w-2xl", customHeader = null }) => {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 bg-navy-900 bg-opacity-50 flex items-center justify-center z-[60] animate-fade-in p-4 print:p-0 print:bg-white print:static print:inset-auto">
+                    <div className={`bg-white rounded-xl shadow-2xl w-full ${size} max-h-[90vh] flex flex-col animate-slide-in print-container print:max-h-none print:shadow-none print:w-full`}>
+                        {customHeader ? customHeader : (
+                            <div className="p-5 border-b flex justify-between items-center bg-gray-50 rounded-t-xl print-hide">
+                                <h3 className="font-bold text-lg text-gray-800">{title}</h3>
+                                <button onClick={onClose} className="text-gray-400 hover:text-red-500 transition-colors"><Icons.X /></button>
+                            </div>
+                        )}
+                        <div className="p-6 overflow-y-auto main-scroll print:overflow-visible print:p-0" id="printable-area">
+                            {children}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const Toast = ({ message, type, onClose }) => {
+            useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, [onClose]);
+            const colors = type === 'success' ? 'bg-green-100 border-green-500 text-green-800' : 'bg-red-100 border-red-500 text-red-800';
+            const icon = type === 'success' ? <Icons.Check /> : <Icons.X />;
+            return (
+                <div className={`fixed bottom-6 left-6 z-[70] flex items-center gap-3 px-6 py-4 rounded-lg border-l-4 shadow-lg animate-slide-in ${colors}`}>
+                    {icon}<span className="font-bold text-sm">{message}</span>
+                </div>
+            );
+        };
+
+        // --- Login Screen ---
+        const LoginScreen = ({ onLogin }) => {
+            const [username, setUsername] = useState('');
+            const [password, setPassword] = useState('');
+            const [error, setError] = useState('');
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if(username && password) {
+                    onLogin({ username, role: username === 'admin' ? 'مدير' : 'موظف' });
+                } else {
+                    setError('الرجاء إدخال اسم المستخدم وكلمة المرور');
+                }
+            };
+
+            return (
+                <div className="flex h-screen w-full bg-navy-900 items-center justify-center p-4 relative overflow-hidden">
+                    <div className="absolute top-[-10%] left-[-10%] w-96 h-96 bg-brand rounded-full mix-blend-multiply filter blur-3xl opacity-20"></div>
+                    <div className="absolute bottom-[-10%] right-[-10%] w-96 h-96 bg-blue-500 rounded-full mix-blend-multiply filter blur-3xl opacity-20"></div>
+                    
+                    <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full relative z-10 animate-slide-in">
+                        <div className="text-center mb-8">
+                            <h1 className="text-4xl font-black text-gray-900 tracking-wide mb-2">هندسة السيارات</h1>
+                            <p className="text-gray-500 font-bold">نظام إدارة الورشة (CRM)</p>
+                        </div>
+                        {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm font-bold mb-4 border border-red-200 text-center">{error}</div>}
+                        <form onSubmit={handleSubmit} className="space-y-5">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-700 mb-1">اسم المستخدم</label>
+                                <input type="text" value={username} onChange={e=>setUsername(e.target.value)} className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-brand focus:ring-0 text-left" dir="ltr" placeholder="admin" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-700 mb-1">كلمة المرور</label>
+                                <input type="password" value={password} onChange={e=>setPassword(e.target.value)} className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-brand focus:ring-0 text-left" dir="ltr" placeholder="••••••••" />
+                            </div>
+                            <button type="submit" className="w-full bg-brand text-white py-3.5 rounded-xl font-bold text-lg hover:bg-blue-700 transition-colors shadow-lg mt-4">تسجيل الدخول</button>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- Global Database State (CLEAN START MODE) ---
+        const initialDB = {
+            customers: [],
+            workOrders: [],
+            followUps: [],
+            feedback: [],
+            offers: [],
+            communicationQueue: [],
+            users: [
+                { id: 1, name: 'مدير النظام', username: 'admin', role: 'مدير النظام', phone: '07900000000', email: 'admin@workshop.com', status: 'نشط', lastLogin: '-' }
+            ],
+            templates: []
+        };
+
+        // --- Components ---
+
+        // 1. Dashboard
+        const Dashboard = ({ db }) => {
+            useEffect(() => {
+                const ctxRev = document.getElementById('revenueChart');
+                if(ctxRev && !ctxRev.dataset.chartjs) {
+                    ctxRev.dataset.chartjs = "true";
+                    new Chart(ctxRev, {
+                        type: 'line',
+                        data: {
+                            labels: ['السبت', 'الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'],
+                            datasets: [{ label: 'الإيرادات (د.ع)', data: [0, 0, 0, 0, 0, 0], borderColor: '#2563eb', backgroundColor: 'rgba(37, 99, 235, 0.1)', fill: true, tension: 0.4 }]
+                        },
+                        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+                    });
+                }
+            }, []);
+
+            return (
+                <div className="space-y-6 animate-fade-in">
+                    <h2 className="text-2xl font-bold text-gray-800">نظرة عامة على الورشة</h2>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                        {[
+                            { title: 'إجمالي العملاء', value: db.customers.length, color: 'bg-blue-50 text-blue-700' },
+                            { title: 'إجمالي الإيرادات (الشهر)', value: formatMoney(db.workOrders.reduce((sum, wo) => sum + wo.total, 0)), color: 'bg-green-50 text-green-700' },
+                            { title: 'الخدمات المنفذة', value: db.workOrders.length, color: 'bg-purple-50 text-purple-700' },
+                            { title: 'مهام التواصل اليوم', value: db.communicationQueue.filter(q => q.status === 'قيد الانتظار').length, color: 'bg-yellow-50 text-yellow-700' },
+                            { title: 'تذكيرات الزيت المطلوبة', value: db.communicationQueue.filter(q => q.type.includes('زيت') && q.status === 'قيد الانتظار').length, color: 'bg-red-50 text-red-700' },
+                        ].map((kpi, i) => (
+                            <div key={i} className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 flex flex-col justify-center">
+                                <p className="text-sm text-gray-500 font-medium mb-1">{kpi.title}</p>
+                                <p className={`text-xl font-bold ${kpi.color.split(' ')[1]}`}>{kpi.value}</p>
+                            </div>
+                        ))}
+                    </div>
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 lg:col-span-2">
+                            <h3 className="text-lg font-bold text-gray-800 mb-4">الإيرادات الأسبوعية</h3>
+                            <div className="h-64 w-full"><canvas id="revenueChart"></canvas></div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // 2. Customers
+        const Customers = ({ db, updateDb, onViewProfile, addToast }) => {
+            const [searchTerm, setSearchTerm] = useState('');
+            const [showAddModal, setShowAddModal] = useState(false);
+            const [newCust, setNewCust] = useState({ name: '', phone: '', vehicleType: '', vehicleModel: '', plateNumber: '', engineSize: '', mileage: '', notes: '' });
+
+            const handleAddCustomer = () => {
+                if (!newCust.name || !newCust.phone) return addToast("الرجاء إدخال اسم العميل ورقم الهاتف", "error");
+                const cust = {
+                    id: `C-${Math.floor(1000 + Math.random() * 9000)}`,
+                    ...newCust,
+                    segment: 'عميل جديد', 
+                    status: 'نشط',
+                    lastVisit: '-',
+                    totalSpent: 0,
+                    visitsCount: 0,
+                    averageRating: 0
+                };
+                updateDb('customers', [cust, ...db.customers]);
+                addToast("تم إضافة العميل بنجاح وتم تصنيفه كعميل جديد.", "success");
+                setShowAddModal(false);
+                setNewCust({ name: '', phone: '', vehicleType: '', vehicleModel: '', plateNumber: '', engineSize: '', mileage: '', notes: '' });
+            };
+
+            const handleDelete = (id) => {
+                if(window.confirm('هل أنت متأكد من الحذف؟ سيتم مسح بيانات العميل بشكل نهائي.')){
+                    updateDb('customers', db.customers.filter(c => c.id !== id));
+                    addToast('تم حذف العميل بنجاح', 'success');
+                }
+            };
+
+            const filteredCustomers = db.customers.filter(c => c.name.includes(searchTerm) || c.phone.includes(searchTerm));
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                        <h2 className="text-2xl font-bold text-gray-800">إدارة العملاء</h2>
+                        <button onClick={() => setShowAddModal(true)} className="bg-brand text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 hover:bg-blue-700 w-full sm:w-auto justify-center shadow-md">
+                            <Icons.Plus /> إضافة عميل جديد
+                        </button>
+                    </div>
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex gap-4">
+                        <div className="flex-1 relative">
+                            <Icons.Search className="absolute right-3 top-3" />
+                            <input type="text" placeholder="بحث بالاسم، رقم الهاتف..." className="w-full pl-4 pr-10 py-2 border rounded-lg bg-gray-50" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+                        </div>
+                    </div>
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm text-right crm-table">
+                                <thead><tr><th>رقم العميل</th><th>الاسم</th><th>الهاتف</th><th>السيارة</th><th>التصنيف</th><th>إجمالي المدفوعات</th><th>الإجراءات</th></tr></thead>
+                                <tbody>
+                                    {filteredCustomers.map(c => (
+                                        <tr key={c.id}>
+                                            <td className="font-medium text-gray-500">{c.id}</td>
+                                            <td className="font-bold text-gray-800">{c.name}</td>
+                                            <td dir="ltr" className="text-right">{c.phone}</td>
+                                            <td>{c.vehicleType} - {c.vehicleModel}</td>
+                                            <td><span className={`px-2 py-1 rounded-md text-xs font-medium ${c.segment === 'عميل جديد' ? 'bg-green-100 text-green-700' : c.segment === 'VIP' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{c.segment}</span></td>
+                                            <td className="font-medium text-green-600">{formatMoney(c.totalSpent)}</td>
+                                            <td>
+                                                <div className="flex gap-2">
+                                                    <button onClick={() => onViewProfile(c)} className="text-brand hover:text-blue-800 font-bold text-xs bg-blue-50 border border-blue-200 px-3 py-1.5 rounded">عرض الملف</button>
+                                                    <button onClick={() => handleDelete(c.id)} className="text-red-600 hover:text-red-800 font-bold text-xs bg-red-50 border border-red-200 px-2 py-1.5 rounded" title="حذف العميل"><Icons.Trash /></button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                    {filteredCustomers.length === 0 && <tr><td colSpan="7" className="text-center py-8 text-gray-500 font-bold text-lg">لا توجد بيانات حالياً</td></tr>}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <Modal title="إضافة عميل جديد" isOpen={showAddModal} onClose={() => setShowAddModal(false)}>
+                        <div className="space-y-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div><label className="block text-sm font-bold mb-1">اسم العميل *</label><input type="text" className="w-full border p-2 rounded bg-gray-50" value={newCust.name} onChange={e=>setNewCust({...newCust, name: e.target.value})} /></div>
+                                <div><label className="block text-sm font-bold mb-1">رقم الهاتف *</label><input type="text" className="w-full border p-2 rounded bg-gray-50" dir="ltr" value={newCust.phone} onChange={e=>setNewCust({...newCust, phone: e.target.value})} /></div>
+                                <div><label className="block text-sm font-bold mb-1">نوع السيارة (الماركة)</label><input type="text" className="w-full border p-2 rounded bg-gray-50" value={newCust.vehicleType} onChange={e=>setNewCust({...newCust, vehicleType: e.target.value})} /></div>
+                                <div><label className="block text-sm font-bold mb-1">الموديل وسنة الصنع</label><input type="text" className="w-full border p-2 rounded bg-gray-50" value={newCust.vehicleModel} onChange={e=>setNewCust({...newCust, vehicleModel: e.target.value})} /></div>
+                                <div><label className="block text-sm font-bold mb-1">رقم اللوحة</label><input type="text" className="w-full border p-2 rounded bg-gray-50" value={newCust.plateNumber} onChange={e=>setNewCust({...newCust, plateNumber: e.target.value})} /></div>
+                                <div><label className="block text-sm font-bold mb-1">حجم المحرك</label><input type="text" className="w-full border p-2 rounded bg-gray-50" value={newCust.engineSize} onChange={e=>setNewCust({...newCust, engineSize: e.target.value})} /></div>
+                                <div><label className="block text-sm font-bold mb-1">عداد الكيلومترات</label><input type="number" className="w-full border p-2 rounded bg-gray-50" value={newCust.mileage} onChange={e=>setNewCust({...newCust, mileage: e.target.value})} /></div>
+                                <div className="sm:col-span-2"><label className="block text-sm font-bold mb-1">ملاحظات إضافية</label><textarea className="w-full border p-2 rounded bg-gray-50 h-20" value={newCust.notes} onChange={e=>setNewCust({...newCust, notes: e.target.value})}></textarea></div>
+                            </div>
+                            <div className="flex justify-end gap-3 pt-4 border-t mt-4">
+                                <button onClick={() => setShowAddModal(false)} className="px-5 py-2 bg-gray-200 rounded font-bold hover:bg-gray-300">إلغاء</button>
+                                <button onClick={handleAddCustomer} className="px-5 py-2 bg-brand text-white rounded font-bold hover:bg-blue-700 shadow-md flex items-center gap-2"><Icons.Check/> حفظ وتصنيف العميل</button>
+                            </div>
+                        </div>
+                    </Modal>
+                </div>
+            );
+        };
+
+        const CustomerProfile = ({ customer, onBack, db, addToast }) => {
+            const [showPrintModal, setShowPrintModal] = useState(false);
+            if (!customer) return null;
+
+            const custOrders = db.workOrders.filter(w => w.customerName === customer.name);
+            const detailedServicesList = custOrders.flatMap(wo => (wo.detailedServices || []).map(s => ({ ...s, date: wo.date, orderId: wo.id })));
+            const commHistory = [
+                ...db.feedback.filter(f => f.customer === customer.name).map(f => ({ date: f.date, type: 'تقييم الخدمة', result: f.status, rating: f.rating, comment: f.comment })),
+                ...db.followUps.filter(f => f.customer === customer.name && f.status === 'مكتملة').map(f => ({ date: f.date, type: f.type, result: f.status, rating: '-', comment: f.notes }))
+            ];
+            const offersHistory = db.offers.filter(o => o.status === 'نشط'); // Mocked generic offers
+
+            const handleExportExcel = () => {
+                const headers = ["التاريخ", "رقم الطلب", "اسم الخدمة", "التفاصيل", "الكمية", "السعر", "الإجمالي"];
+                const rows = detailedServicesList.map(s => [
+                    s.date, s.orderId, s.name, Object.values(s.details||{}).join(' '), s.qty, s.price, parseFloat(s.price)*parseFloat(s.qty)
+                ]);
+                exportToExcelCSV(`تقرير_عميل_${customer.name.replace(/ /g,'_')}.csv`, headers, rows);
+                addToast("تم تصدير التقرير المفصل إلى Excel بنجاح", "success");
+            };
+
+            const openWhatsApp = () => {
+                window.open(generateWhatsAppLink(customer.phone, "", customer.name), '_blank');
+                addToast("تم التوجيه إلى WhatsApp", "success");
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b pb-4">
+                        <button onClick={onBack} className="flex items-center gap-2 text-gray-500 hover:text-brand font-bold bg-white px-4 py-2 rounded-lg border shadow-sm"><Icons.Back /> العودة للقائمة</button>
+                        <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+                            <button onClick={()=>setShowPrintModal(true)} className="flex-1 sm:flex-none bg-blue-100 text-brand px-4 py-2 rounded-lg font-bold border border-blue-200 hover:bg-blue-200 flex items-center justify-center gap-2"><Icons.FileText /> معاينة وطباعة</button>
+                            <button onClick={handleExportExcel} className="flex-1 sm:flex-none bg-green-50 text-green-700 px-4 py-2 rounded-lg font-bold border border-green-200 hover:bg-green-100 flex items-center justify-center gap-2"><Icons.Download /> تصدير Excel</button>
+                            <button onClick={openWhatsApp} className="flex-1 sm:flex-none bg-green-500 text-white px-4 py-2 rounded-lg font-bold shadow-md hover:bg-green-600 flex items-center justify-center gap-2"><Icons.Message /> واتساب</button>
+                        </div>
+                    </div>
+                    
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col md:flex-row items-start md:items-center justify-between gap-6 relative overflow-hidden">
+                        <div className="absolute left-0 top-0 w-2 h-full bg-brand"></div>
+                        <div>
+                            <h2 className="text-3xl font-black text-gray-900 mb-3">{customer.name}</h2>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-x-8 gap-y-2 text-sm text-gray-700 font-medium">
+                                <span className="flex items-center gap-2"><Icons.Phone /> <span dir="ltr">{customer.phone}</span></span>
+                                <span className="flex items-center gap-2"><Icons.Car /> {customer.vehicleType} {customer.vehicleModel}</span>
+                                <span>اللوحة: {customer.plateNumber || '-'}</span>
+                                <span>العداد: {customer.mileage ? customer.mileage + ' كم' : '-'}</span>
+                            </div>
+                        </div>
+                        <div className="bg-gray-50 p-4 rounded-lg border text-center min-w-[200px] w-full md:w-auto">
+                            <span className={`inline-block px-4 py-1.5 rounded-full text-xs font-black uppercase tracking-wider mb-3 ${customer.segment === 'عميل جديد' ? 'bg-green-100 text-green-700' : customer.segment === 'VIP' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{customer.segment}</span>
+                            <div className="flex justify-between items-center text-sm border-t pt-2"><span className="text-gray-500">إجمالي الصرف:</span><span className="font-black text-green-600">{formatMoney(customer.totalSpent)}</span></div>
+                            <div className="flex justify-between items-center text-sm"><span className="text-gray-500">الزيارات:</span><span className="font-bold">{customer.visitsCount}</span></div>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        {/* Visits Table */}
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                            <div className="p-4 bg-gray-50 border-b font-bold text-gray-800">أ. جدول الزيارات وفواتير العمل</div>
+                            <div className="overflow-x-auto max-h-80 main-scroll">
+                                <table className="w-full text-sm text-right crm-table">
+                                    <thead className="sticky top-0 bg-gray-50"><tr><th>رقم الطلب</th><th>التاريخ</th><th>الخدمات</th><th>المبلغ</th><th>الفني</th></tr></thead>
+                                    <tbody>
+                                        {custOrders.map(wo => <tr key={wo.id}><td className="text-brand font-bold">{wo.id}</td><td>{wo.date}</td><td className="truncate max-w-[120px]" title={wo.services.join('، ')}>{wo.services.join('، ')}</td><td className="font-bold text-green-600">{formatMoney(wo.total)}</td><td>{wo.technician}</td></tr>)}
+                                        {custOrders.length === 0 && <tr><td colSpan="5" className="text-center py-8 text-gray-500 font-bold text-lg">لا توجد بيانات حالياً</td></tr>}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        {/* Detailed Services Table */}
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                            <div className="p-4 bg-gray-50 border-b font-bold text-gray-800">ب. جدول الخدمات التفصيلية والقطع</div>
+                            <div className="overflow-x-auto max-h-80 main-scroll">
+                                <table className="w-full text-sm text-right crm-table">
+                                    <thead className="sticky top-0 bg-gray-50"><tr><th>الخدمة</th><th>التفاصيل</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr></thead>
+                                    <tbody>
+                                        {detailedServicesList.map((s,i) => {
+                                            const detailsStr = Object.values(s.details||{}).filter(v=>v).join(' - ');
+                                            const total = (parseFloat(s.price)||0) * (parseFloat(s.qty)||1);
+                                            return <tr key={i}><td className="font-bold">{s.name}</td><td className="text-gray-500 text-xs">{detailsStr||'-'}</td><td className="text-center">{s.qty||1}</td><td>{formatMoney(s.price)}</td><td className="font-bold text-gray-900">{formatMoney(total)}</td></tr>
+                                        })}
+                                        {detailedServicesList.length === 0 && <tr><td colSpan="5" className="text-center py-8 text-gray-500 font-bold text-lg">لا توجد بيانات حالياً</td></tr>}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        {/* Communication History */}
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                            <div className="p-4 bg-gray-50 border-b font-bold text-gray-800">ج. سجل التواصل والفيدباك</div>
+                            <div className="overflow-x-auto max-h-64 main-scroll">
+                                <table className="w-full text-sm text-right crm-table">
+                                    <thead className="sticky top-0 bg-gray-50"><tr><th>التاريخ</th><th>النوع</th><th>النتيجة</th><th>التقييم</th><th>الرأي / الملاحظة</th></tr></thead>
+                                    <tbody>
+                                        {commHistory.map((c,i) => <tr key={i}><td>{c.date}</td><td><span className="bg-gray-200 px-2 py-1 rounded text-xs">{c.type}</span></td><td>{c.result}</td><td className="text-yellow-500 font-bold">{c.rating !== '-' ? c.rating+'★' : '-'}</td><td className="truncate max-w-[150px]">{c.comment||'-'}</td></tr>)}
+                                        {commHistory.length === 0 && <tr><td colSpan="5" className="text-center py-8 text-gray-500 font-bold text-lg">لا توجد بيانات حالياً</td></tr>}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        {/* Offers History */}
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                            <div className="p-4 bg-gray-50 border-b font-bold text-gray-800">د. سجل العروض المرسلة</div>
+                            <div className="overflow-x-auto max-h-64 main-scroll">
+                                <table className="w-full text-sm text-right crm-table">
+                                    <thead className="sticky top-0 bg-gray-50"><tr><th>اسم العرض</th><th>تاريخ الإرسال</th><th>الاستجابة</th></tr></thead>
+                                    <tbody>
+                                        {offersHistory.map((o,i) => <tr key={i}><td className="font-bold">{o.title}</td><td>{new Date().toLocaleDateString('ar-IQ')}</td><td><span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">غير محدد</span></td></tr>)}
+                                        {offersHistory.length === 0 && <tr><td colSpan="3" className="text-center py-8 text-gray-500 font-bold text-lg">لا توجد بيانات حالياً</td></tr>}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Print Preview Modal */}
+                    <Modal title="معاينة التقرير الشامل للعميل" isOpen={showPrintModal} onClose={() => setShowPrintModal(false)} size="max-w-4xl" customHeader={<div className="p-4 border-b flex justify-between items-center bg-gray-50 print-hide"><h3 className="font-bold text-lg text-gray-800">معاينة للطباعة - تقرير العميل</h3><button onClick={()=>setShowPrintModal(false)} className="text-gray-400 hover:text-red-500"><Icons.X/></button></div>}>
+                        <div id="printable-area" className="bg-white text-gray-900 text-sm">
+                            <div className="text-center border-b-4 border-gray-800 pb-4 mb-6">
+                                <h1 className="text-3xl font-black tracking-wider text-gray-900">هندسة السيارات</h1>
+                                <p className="text-lg font-bold text-gray-600 mt-1">التقرير الشامل لملف العميل</p>
+                            </div>
+                            
+                            <div className="border-2 border-gray-300 p-4 rounded-lg mb-6 bg-gray-50">
+                                <h3 className="font-black text-lg border-b border-gray-300 pb-2 mb-3">1. معلومات العميل والمركبة</h3>
+                                <div className="grid grid-cols-3 gap-4">
+                                    <div><p className="text-gray-500 text-xs">اسم العميل:</p><p className="font-bold text-base">{customer.name}</p></div>
+                                    <div><p className="text-gray-500 text-xs">رقم الهاتف:</p><p className="font-bold text-base" dir="ltr">{customer.phone}</p></div>
+                                    <div><p className="text-gray-500 text-xs">التصنيف:</p><p className="font-bold text-base">{customer.segment}</p></div>
+                                    <div><p className="text-gray-500 text-xs">المركبة:</p><p className="font-bold text-base">{customer.vehicleType} {customer.vehicleModel}</p></div>
+                                    <div><p className="text-gray-500 text-xs">رقم اللوحة:</p><p className="font-bold text-base">{customer.plateNumber || '-'}</p></div>
+                                    <div><p className="text-gray-500 text-xs">إجمالي الصرف:</p><p className="font-bold text-base text-green-600">{formatMoney(customer.totalSpent)}</p></div>
+                                </div>
+                            </div>
+
+                            <div className="mb-6 print-break-inside-avoid">
+                                <h3 className="font-black text-lg border-b-2 border-gray-800 pb-1 mb-3">2. ملخص الزيارات وفواتير الصيانة</h3>
+                                <table className="w-full text-right border-collapse border-2 border-gray-300">
+                                    <thead className="bg-gray-100"><tr><th className="p-2 border border-gray-300">رقم الطلب</th><th className="p-2 border border-gray-300">التاريخ</th><th className="p-2 border border-gray-300">الخدمات</th><th className="p-2 border border-gray-300">المبلغ</th></tr></thead>
+                                    <tbody>
+                                        {custOrders.map(wo => <tr key={wo.id}><td className="p-2 border border-gray-300 font-bold">{wo.id}</td><td className="p-2 border border-gray-300">{wo.date}</td><td className="p-2 border border-gray-300">{wo.services.join('، ')}</td><td className="p-2 border border-gray-300 font-bold">{formatMoney(wo.total)}</td></tr>)}
+                                        {custOrders.length === 0 && <tr><td colSpan="4" className="p-4 text-center font-bold text-gray-500">لا توجد بيانات حالياً</td></tr>}
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <div className="mb-6 print-break-inside-avoid">
+                                <h3 className="font-black text-lg border-b-2 border-gray-800 pb-1 mb-3">3. التفاصيل الدقيقة للقطع والخدمات المستهلكة</h3>
+                                <table className="w-full text-right border-collapse border-2 border-gray-300">
+                                    <thead className="bg-gray-100"><tr><th className="p-2 border border-gray-300">تاريخ الطلب</th><th className="p-2 border border-gray-300">الخدمة / القطعة</th><th className="p-2 border border-gray-300">الكمية</th><th className="p-2 border border-gray-300">الإجمالي</th></tr></thead>
+                                    <tbody>
+                                        {detailedServicesList.map((s,i) => <tr key={i}><td className="p-2 border border-gray-300">{s.date}</td><td className="p-2 border border-gray-300 font-bold">{s.name} <span className="font-normal text-gray-500">({Object.values(s.details||{}).join(' ')})</span></td><td className="p-2 border border-gray-300 text-center">{s.qty||1}</td><td className="p-2 border border-gray-300 font-bold">{formatMoney((parseFloat(s.price)||0)*(parseFloat(s.qty)||1))}</td></tr>)}
+                                        {detailedServicesList.length === 0 && <tr><td colSpan="4" className="p-4 text-center font-bold text-gray-500">لا توجد بيانات حالياً</td></tr>}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div className="flex justify-end gap-3 mt-6 pt-4 border-t print-hide">
+                            <button onClick={()=>setShowPrintModal(false)} className="px-6 py-2 bg-gray-200 text-gray-700 rounded font-bold hover:bg-gray-300">إغلاق</button>
+                            <button onClick={()=>{ window.print(); addToast("جاري التوجيه للطباعة", "success"); }} className="px-8 py-2 bg-brand text-white rounded font-bold shadow-md hover:bg-blue-700 flex items-center gap-2"><Icons.FileText /> طباعة التقرير</button>
+                        </div>
+                    </Modal>
+                </div>
+            );
+        }
+
+        // 3. Work Order Form
+        const WorkOrder = ({ db, updateDb, addToast }) => {
+            const serviceDefs = [
+                { id: 1, name: 'زيت المحرك', fields: [{key: 'oilType', label: 'نوع الزيت'}, {key: 'viscosity', label: 'اللزوجة'}, {key: 'liters', label: 'الكمية/لتر', type: 'number'}] },
+                { id: 2, name: 'فلتر زيت المحرك', fields: [{key: 'filterType', label: 'نوع الفلتر'}, {key: 'filterNum', label: 'رقم الفلتر'}] },
+                { id: 3, name: 'فلتر الهواء', fields: [{key: 'filterType', label: 'نوع الفلتر'}, {key: 'filterNum', label: 'رقم الفلتر'}] },
+                { id: 4, name: 'فلتر التبريد', fields: [{key: 'filterType', label: 'نوع الفلتر'}, {key: 'filterNum', label: 'رقم الفلتر'}] },
+                { id: 5, name: 'زيت ناقل الحركة (القير)', fields: [{key: 'oilType', label: 'نوع الزيت'}] },
+                { id: 6, name: 'نظام التبريد', fields: [{key: 'waterType', label: 'نوع الماء'}, {key: 'qty', label: 'العدد', type: 'number'}] },
+                { id: 7, name: 'البطارية', fields: [{key: 'batteryType', label: 'نوع البطارية'}] },
+                { id: 8, name: 'فلتر البنزين', fields: [{key: 'filterType', label: 'نوع الفلتر'}, {key: 'filterNum', label: 'رقم الفلتر'}] },
+                { id: 9, name: 'السفايف (البريكات)', fields: [{key: 'padsType', label: 'نوع السفايف'}] },
+                { id: 10, name: 'شمعات الاحتراق', fields: [{key: 'plugsType', label: 'نوع الشمعات'}] },
+                { id: 11, name: 'سائل الفرامل', fields: [] },
+                { id: 12, name: 'المساحات', fields: [] },
+            ];
+
+            const initialServices = () => serviceDefs.map(def => ({
+                id: def.id, name: def.name, status: '', price: '', notes: '', details: def.fields.reduce((acc, f) => ({...acc, [f.key]: ''}), {})
+            }));
+
+            const [services, setServices] = useState(initialServices());
+            const [custData, setCustData] = useState({ name: '', phone: '', vehicle: '', plate: '', km: '' });
+            const [discount, setDiscount] = useState('');
+            const [paid, setPaid] = useState('');
+            const [finalNotes, setFinalNotes] = useState('');
+            const [isGeneratingNotes, setIsGeneratingNotes] = useState(false);
+            const [showPrintModal, setShowPrintModal] = useState(false);
+            const [orderNumber, setOrderNumber] = useState(`WO-${Math.floor(10000 + Math.random() * 90000)}`);
+            const today = new Date().toISOString().split('T')[0];
+
+            // Calculations based on quantity/liters
+            const calculateRowTotal = (srv) => {
+                const price = parseFloat(srv.price) || 0;
+                let multiplier = 1;
+                if (srv.details.liters) multiplier = parseFloat(srv.details.liters) || 1;
+                else if (srv.details.qty) multiplier = parseFloat(srv.details.qty) || 1;
+                return price * multiplier;
+            };
+
+            const subTotal = useMemo(() => services.reduce((acc, s) => acc + calculateRowTotal(s), 0), [services]);
+            const finalTotal = useMemo(() => Math.max(0, subTotal - (parseFloat(discount) || 0)), [subTotal, discount]);
+            const remaining = useMemo(() => Math.max(0, finalTotal - (parseFloat(paid) || 0)), [finalTotal, paid]);
+
+            const handleServiceChange = (index, field, value) => {
+                const newServices = [...services];
+                newServices[index][field] = value;
+                setServices(newServices);
+            };
+
+            const handleDetailChange = (index, key, value) => {
+                const newServices = [...services];
+                newServices[index].details[key] = value;
+                setServices(newServices);
+            };
+
+            const handleGenerateNotes = async () => {
+                setIsGeneratingNotes(true);
+                const badServices = services.filter(s => s.status === 'يحتاج تبديل').map(s => s.name);
+                const goodServices = services.filter(s => s.status === 'جيد').map(s => s.name);
+                let prompt = `أنت مهندس سيارات. اكتب فقرة "توصيات فنية" للعميل بناءً على الفحص. السيارة: ${custData.vehicle || 'غير محدد'}. `;
+                if (badServices.length > 0) prompt += `أجزاء تحتاج تبديل ضروري: ${badServices.join('، ')}. حذره بلباقة.\n`;
+                if (goodServices.length > 0) prompt += `أجزاء سليمة: ${goodServices.join('، ')}.\n`;
+                prompt += `اكتب التوصيات بلغة عربية احترافية ومختصرة جداً (لا تتجاوز 3 أسطر) للفاتورة. لا تستخدم مقدمات.`;
+                const text = await generateWithGemini(prompt);
+                setFinalNotes(text.trim());
+                setIsGeneratingNotes(false);
+            };
+
+            const handleSaveAndClose = () => {
+                if(!custData.name || !custData.phone) return addToast("الرجاء إدخال اسم العميل ورقم الهاتف", "error");
+                
+                const existingCustIndex = db.customers.findIndex(c => c.phone === custData.phone);
+                let newCustomers = [...db.customers];
+                
+                if(existingCustIndex === -1) {
+                    newCustomers.push({ id: `C-${Date.now()}`, name: custData.name, phone: custData.phone, vehicleType: custData.vehicle, segment: 'عميل جديد', totalSpent: finalTotal, visitsCount: 1, status: 'نشط', lastVisit: today });
+                } else {
+                    newCustomers[existingCustIndex].totalSpent += finalTotal;
+                    newCustomers[existingCustIndex].visitsCount += 1;
+                    newCustomers[existingCustIndex].lastVisit = today;
+                }
+                updateDb('customers', newCustomers);
+
+                const validServices = services.filter(s => parseFloat(s.price) > 0 || s.status);
+                const executedServicesNames = validServices.map(s => s.name);
+                const detailedServices = validServices.map(s => ({
+                    name: s.name, status: s.status, price: s.price, qty: (s.details.liters||s.details.qty||1), details: s.details
+                }));
+
+                const newOrder = { id: orderNumber, date: today, customerName: custData.name, vehicle: custData.vehicle, services: executedServicesNames, detailedServices, technician: 'فريق الورشة', total: finalTotal, status: 'مكتمل', feedback: false, notes: finalNotes };
+                updateDb('workOrders', [newOrder, ...db.workOrders]);
+
+                const newQueueItems = [];
+                newQueueItems.push({ id: Date.now()+1, customerName: custData.name, phone: custData.phone, vehicle: custData.vehicle, lastVisit: today, reason: 'متابعة رضا العميل بعد الخدمة', type: 'رضا العميل', priority: 'عالية', status: 'قيد الانتظار' });
+                if(executedServicesNames.some(s => s.includes('زيت'))) {
+                    newQueueItems.push({ id: Date.now()+2, customerName: custData.name, phone: custData.phone, vehicle: custData.vehicle, lastVisit: today, reason: 'تذكير تغيير زيت بعد 30 يوم', type: 'تذكير تغيير زيت', priority: 'عادية', status: 'قيد الانتظار' });
+                }
+                if(newQueueItems.length > 0) updateDb('communicationQueue', [...db.communicationQueue, ...newQueueItems]);
+
+                addToast("تم حفظ ورقة العمل وأتمتة المهام بنجاح", "success");
+                setCustData({ name: '', phone: '', vehicle: '', plate: '', km: '' });
+                setServices(initialServices());
+                setDiscount(''); setPaid(''); setFinalNotes('');
+                setOrderNumber(`WO-${Math.floor(10000 + Math.random() * 90000)}`);
+            };
+
+            const handleCancel = () => {
+                if(window.confirm("هل أنت متأكد من إلغاء ورقة العمل؟ سيتم مسح كافة البيانات المدخلة.")) {
+                    setCustData({ name: '', phone: '', vehicle: '', plate: '', km: '' });
+                    setServices(initialServices());
+                    setDiscount(''); setPaid(''); setFinalNotes('');
+                    addToast("تم الإلغاء وتفريغ الحقول", "success");
+                }
+            };
+
+            return (
+                <div className="space-y-6 max-w-6xl mx-auto pb-20">
+                    <div className="flex flex-col md:flex-row justify-between items-start md:items-end border-b-2 border-gray-800 pb-4 gap-4">
+                        <div><h2 className="text-3xl font-black text-gray-900 tracking-tight">هندسة السيارات</h2><p className="text-gray-500 font-bold mt-1">ورقة عمل وصيانة المركبات</p></div>
+                        <div className="text-left bg-gray-100 p-3 rounded-lg border border-gray-300 w-full md:w-auto">
+                            <div className="text-sm text-gray-600">رقم الطلب: <span className="font-bold text-lg text-red-600 ml-2">{orderNumber}</span></div>
+                            <div className="text-sm text-gray-600">التاريخ: <span className="font-bold">{new Date().toLocaleDateString('ar-IQ')}</span></div>
+                        </div>
+                    </div>
+
+                    <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
+                        <h3 className="font-bold text-brand border-b pb-2 mb-3">بيانات العميل والسيارة</h3>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                            <div><label className="block text-xs text-gray-500 mb-1">اسم العميل *</label><input type="text" className="w-full border p-2 rounded bg-gray-50" value={custData.name} onChange={e=>setCustData({...custData, name:e.target.value})} /></div>
+                            <div><label className="block text-xs text-gray-500 mb-1">رقم الهاتف *</label><input type="text" className="w-full border p-2 rounded bg-gray-50" value={custData.phone} onChange={e=>setCustData({...custData, phone:e.target.value})} dir="ltr" /></div>
+                            <div><label className="block text-xs text-gray-500 mb-1">نوع السيارة والموديل</label><input type="text" className="w-full border p-2 rounded bg-gray-50" value={custData.vehicle} onChange={e=>setCustData({...custData, vehicle:e.target.value})} /></div>
+                            <div><label className="block text-xs text-gray-500 mb-1">رقم اللوحة</label><input type="text" className="w-full border p-2 rounded bg-gray-50" value={custData.plate} onChange={e=>setCustData({...custData, plate:e.target.value})} /></div>
+                            <div><label className="block text-xs text-gray-500 mb-1">عداد الكيلومتر</label><input type="number" className="w-full border p-2 rounded bg-gray-50" value={custData.km} onChange={e=>setCustData({...custData, km:e.target.value})} /></div>
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                        <div className="bg-gray-800 text-white p-4"><h3 className="font-bold text-lg">قائمة فحص وتنفيذ الخدمات</h3></div>
+                        <div className="p-0 overflow-x-auto">
+                            <table className="w-full text-sm text-right min-w-[800px]">
+                                <thead className="bg-gray-100 border-b-2 border-gray-300">
+                                    <tr><th className="p-3 w-10">ت</th><th className="p-3 w-40">الخدمة</th><th className="p-3 w-32">الحالة</th><th className="p-3">التفاصيل (الكمية والأنواع)</th><th className="p-3 w-32">سعر الوحدة</th><th className="p-3 w-40">ملاحظات</th></tr>
+                                </thead>
+                                <tbody>
+                                    {services.map((srv, index) => (
+                                        <tr key={srv.id} className="border-b border-gray-200 hover:bg-gray-50">
+                                            <td className="p-3 text-center font-bold text-gray-500">{index + 1}</td>
+                                            <td className="p-3 font-bold text-gray-800">{srv.name}</td>
+                                            <td className="p-3">
+                                                <select className="border p-1 text-xs w-full rounded" value={srv.status} onChange={e => handleServiceChange(index, 'status', e.target.value)}>
+                                                    <option value="">- الحالة -</option><option value="جيد">جيد</option><option value="يحتاج تبديل">يحتاج تبديل</option>
+                                                </select>
+                                            </td>
+                                            <td className="p-3">
+                                                <div className="flex flex-wrap gap-2 items-end">
+                                                    {serviceDefs[index].fields.map((f, i) => (
+                                                        <div key={i} className="flex flex-col">
+                                                            <span className="text-[10px] text-gray-500">{f.label}</span>
+                                                            <input type={f.type||"text"} className="border rounded px-2 py-1 text-xs w-20 bg-white" value={srv.details[f.key]} onChange={e => handleDetailChange(index, f.key, e.target.value)} />
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </td>
+                                            <td className="p-3"><input type="number" className="w-full border rounded p-2 text-sm" placeholder="0" value={srv.price} onChange={e => handleServiceChange(index, 'price', e.target.value)} /></td>
+                                            <td className="p-3"><input type="text" className="w-full border rounded p-2 text-xs" placeholder="ملاحظة..." value={srv.notes} onChange={e => handleServiceChange(index, 'notes', e.target.value)} /></td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm flex flex-col">
+                            <div className="flex justify-between items-center border-b pb-2 mb-3">
+                                <h3 className="font-bold text-brand">ملاحظات الفني والتوصيات</h3>
+                                <button onClick={handleGenerateNotes} disabled={isGeneratingNotes} className="text-xs bg-yellow-100 text-yellow-700 px-3 py-1 rounded font-bold hover:bg-yellow-200 transition-colors flex items-center gap-1 disabled:opacity-50 shadow-sm">
+                                    {isGeneratingNotes ? 'جاري التحليل...' : '✨ تحليل الفحص ذكياً'}
+                                </button>
+                            </div>
+                            <textarea className="flex-1 w-full border rounded-lg p-3 bg-gray-50 min-h-[120px] focus:border-brand" placeholder="اكتب النتيجة النهائية والتوصيات هنا..." value={finalNotes} onChange={e=>setFinalNotes(e.target.value)}></textarea>
+                        </div>
+
+                        <div className="bg-gray-800 text-white p-6 rounded-xl shadow-lg border border-gray-900 flex flex-col justify-between">
+                            <h3 className="font-bold text-lg border-b border-gray-700 pb-2 mb-4">ملخص الحسابات</h3>
+                            <div className="space-y-3 text-sm">
+                                <div className="flex justify-between"><span className="text-gray-300">إجمالي الخدمات:</span><span className="font-bold">{formatMoney(subTotal)}</span></div>
+                                <div className="flex justify-between items-center"><span className="text-gray-300">الخصم (د.ع):</span><input type="number" className="w-24 px-2 py-1 text-gray-900 rounded text-left font-bold" placeholder="0" value={discount} onChange={e=>setDiscount(e.target.value)} /></div>
+                                <div className="flex justify-between items-center"><span className="text-gray-300">المبلغ المدفوع (د.ع):</span><input type="number" className="w-24 px-2 py-1 text-gray-900 rounded text-left font-bold text-green-700" placeholder="0" value={paid} onChange={e=>setPaid(e.target.value)} /></div>
+                                <div className="flex justify-between pt-3 border-t border-gray-700"><span className="text-gray-300">المبلغ المتبقي:</span><span className="font-bold text-red-400">{formatMoney(remaining)}</span></div>
+                            </div>
+                            <div className="pt-4 mt-4 border-t border-gray-700 flex justify-between items-center text-2xl font-black text-green-400">
+                                <span>المجموع النهائي:</span><span>{formatMoney(finalTotal)}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row justify-end gap-3 mt-6">
+                        <button onClick={handleCancel} className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg font-bold hover:bg-gray-300 w-full sm:w-auto">إلغاء وتفريغ</button>
+                        <button onClick={()=>setShowPrintModal(true)} className="px-6 py-3 bg-blue-100 text-brand rounded-lg font-bold border border-blue-200 hover:bg-blue-200 w-full sm:w-auto flex justify-center items-center gap-2 shadow-sm"><Icons.FileText/> طباعة الفاتورة</button>
+                        <button onClick={handleSaveAndClose} className="px-6 py-3 bg-brand text-white rounded-lg font-bold shadow-lg hover:bg-blue-700 w-full sm:w-auto flex justify-center items-center gap-2"><Icons.Check/> حفظ وإغلاق الطلب</button>
+                    </div>
+
+                    <Modal title="معاينة الفاتورة للطباعة" isOpen={showPrintModal} onClose={() => setShowPrintModal(false)} size="max-w-4xl" customHeader={<div className="p-4 border-b flex justify-between items-center bg-gray-50 print-hide"><h3 className="font-bold text-lg text-gray-800">معاينة للطباعة - الفاتورة</h3><button onClick={()=>setShowPrintModal(false)} className="text-gray-400 hover:text-red-500"><Icons.X/></button></div>}>
+                        <div id="printable-area" className="bg-white text-gray-900">
+                            <div className="flex justify-between border-b-4 border-gray-800 pb-6 mb-6">
+                                <div className="w-1/2">
+                                    <h1 className="text-4xl font-black tracking-wider text-gray-900">هندسة السيارات</h1>
+                                    <p className="text-lg font-bold text-gray-600 mt-2">لصيانة المركبات وبرمجتها</p>
+                                    <p className="text-sm mt-1">العراق - هاتف: 07900000000</p>
+                                </div>
+                                <div className="text-right w-1/3">
+                                    <div className="border-2 border-gray-300 p-4 rounded-lg bg-gray-50">
+                                        <p className="text-lg font-black text-brand mb-2 border-b border-gray-300 pb-2">فاتورة ضريبية / ورقة عمل</p>
+                                        <p className="text-sm mb-1">رقم الفاتورة: <strong className="text-red-600 text-lg">{orderNumber}</strong></p>
+                                        <p className="text-sm">تاريخ الفاتورة: <strong>{today}</strong></p>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div className="grid grid-cols-2 gap-4 mb-8 border-2 border-gray-200 p-5 rounded-lg bg-gray-50">
+                                <div><span className="text-sm text-gray-500 block mb-1">معلومات العميل</span><p className="font-bold text-xl">{custData.name || '---'}</p><p className="font-medium mt-1" dir="ltr">{custData.phone || '---'}</p></div>
+                                <div><span className="text-sm text-gray-500 block mb-1">معلومات المركبة</span><p className="font-bold text-lg">{custData.vehicle || '---'}</p><p className="text-sm mt-1">اللوحة: {custData.plate || '---'} | العداد: {custData.km || '---'} كم</p></div>
+                            </div>
+
+                            <table className="w-full text-right mb-8 border-collapse border-2 border-gray-300">
+                                <thead>
+                                    <tr className="bg-gray-100 border-b-2 border-gray-300 text-gray-800">
+                                        <th className="p-3 border border-gray-300 w-10 text-center">ت</th>
+                                        <th className="p-3 border border-gray-300">الخدمة / البيان</th>
+                                        <th className="p-3 border border-gray-300 w-24 text-center">الكمية</th>
+                                        <th className="p-3 border border-gray-300 w-32 text-center">سعر الوحدة</th>
+                                        <th className="p-3 border border-gray-300 w-32 text-center">الإجمالي</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {services.filter(s => parseFloat(s.price) > 0 || s.status).map((s, i) => {
+                                        let qty = 1; let qtyLabel = '-';
+                                        if (s.details.liters) { qty = parseFloat(s.details.liters)||1; qtyLabel = `${qty} لتر`; }
+                                        else if (s.details.qty) { qty = parseFloat(s.details.qty)||1; qtyLabel = `${qty}`; }
+                                        const rowTotal = (parseFloat(s.price)||0) * qty;
+                                        return (
+                                            <tr key={s.id} className="border-b border-gray-200">
+                                                <td className="p-3 border border-gray-300 text-center font-bold">{i+1}</td>
+                                                <td className="p-3 border border-gray-300">
+                                                    <p className="font-bold text-lg">{s.name}</p>
+                                                    <p className="text-sm text-gray-600">{Object.values(s.details).filter(v=>v).join(' - ')} {s.notes ? `| ${s.notes}`:''}</p>
+                                                </td>
+                                                <td className="p-3 border border-gray-300 text-center font-medium">{qtyLabel}</td>
+                                                <td className="p-3 border border-gray-300 text-center">{formatMoney(s.price)}</td>
+                                                <td className="p-3 border border-gray-300 text-center font-bold">{formatMoney(rowTotal)}</td>
+                                            </tr>
+                                        )
+                                    })}
+                                    {services.filter(s => parseFloat(s.price) > 0 || s.status).length === 0 && <tr><td colSpan="5" className="p-8 text-center text-gray-500 font-bold text-lg">لم يتم إدخال أي خدمات مسعرة في هذه الفاتورة</td></tr>}
+                                </tbody>
+                            </table>
+
+                            <div className="flex justify-between items-start print-break-inside-avoid">
+                                <div className="w-1/2 pr-4">
+                                    {finalNotes && (
+                                        <div className="bg-gray-50 p-4 border-2 border-gray-200 rounded-lg">
+                                            <h4 className="font-bold text-gray-800 mb-2 border-b pb-2">توصيات وملاحظات الفحص:</h4>
+                                            <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{finalNotes}</p>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="w-2/5">
+                                    <table className="w-full border-collapse border-2 border-gray-300 text-sm">
+                                        <tbody>
+                                            <tr><th className="p-2 border border-gray-300 bg-gray-50 text-right">الإجمالي الفرعي:</th><td className="p-2 border border-gray-300 text-left font-bold">{formatMoney(subTotal)}</td></tr>
+                                            <tr><th className="p-2 border border-gray-300 bg-gray-50 text-right">الخصم:</th><td className="p-2 border border-gray-300 text-left text-red-600">{formatMoney(discount)}</td></tr>
+                                            <tr><th className="p-3 border border-gray-800 bg-gray-800 text-white text-right text-lg">المبلغ النهائي:</th><td className="p-3 border border-gray-800 text-left text-xl font-black bg-gray-100">{formatMoney(finalTotal)}</td></tr>
+                                            <tr><th className="p-2 border border-gray-300 bg-gray-50 text-right">المبلغ المدفوع:</th><td className="p-2 border border-gray-300 text-left text-green-600 font-bold">{formatMoney(paid)}</td></tr>
+                                            <tr><th className="p-2 border border-gray-300 bg-gray-50 text-right">المتبقي بذمة العميل:</th><td className="p-2 border border-gray-300 text-left font-bold">{formatMoney(remaining)}</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <div className="flex justify-between mt-20 pt-8 border-t-2 border-gray-800 print-break-inside-avoid">
+                                <div className="text-center w-1/3"><p className="font-bold text-lg mb-12">توقيع العميل</p><p className="text-gray-400">..............................</p></div>
+                                <div className="text-center w-1/3"><p className="font-bold text-lg mb-12">ختم وتوقيع الورشة</p><p className="text-gray-400">..............................</p></div>
+                            </div>
+                        </div>
+
+                        <div className="flex justify-end gap-3 mt-6 pt-4 border-t print-hide">
+                            <button onClick={()=>setShowPrintModal(false)} className="px-6 py-2 bg-gray-200 text-gray-700 rounded font-bold hover:bg-gray-300">إغلاق المعاينة</button>
+                            <button onClick={()=>{ window.print(); }} className="px-8 py-2 bg-brand text-white rounded font-bold shadow-md hover:bg-blue-700 flex items-center gap-2"><Icons.FileText /> تأكيد وطباعة الفاتورة</button>
+                        </div>
+                    </Modal>
+                </div>
+            );
+        };
+
+        // 4. Visits and History
+        const History = ({ db, updateDb, onViewProfile, addToast }) => {
+            const [searchTerm, setSearchTerm] = useState('');
+            const [dateFilter, setDateFilter] = useState('');
+            const [serviceFilter, setServiceFilter] = useState('كل الخدمات');
+            const [statusFilter, setStatusFilter] = useState('الكل');
+
+            const [selectedOrder, setSelectedOrder] = useState(null);
+            const [showDetailsModal, setShowDetailsModal] = useState(false);
+            const [showExportModal, setShowExportModal] = useState(false);
+
+            const filteredOrders = useMemo(() => {
+                return db.workOrders.filter(wo => {
+                    const matchSearch = searchTerm === '' || wo.id.includes(searchTerm) || wo.customerName.includes(searchTerm);
+                    const matchDate = dateFilter === '' || wo.date === dateFilter;
+                    const matchService = serviceFilter === 'كل الخدمات' || wo.services.join(' ').includes(serviceFilter);
+                    const matchStatus = statusFilter === 'الكل' || wo.status === statusFilter;
+                    return matchSearch && matchDate && matchService && matchStatus;
+                });
+            }, [db.workOrders, searchTerm, dateFilter, serviceFilter, statusFilter]);
+
+            const handleDelete = (id) => {
+                if(window.confirm('هل أنت متأكد من الحذف؟ سيتم إزالة السجل نهائياً.')){
+                    updateDb('workOrders', db.workOrders.filter(w => w.id !== id));
+                    addToast('تم الحذف بنجاح', 'success');
+                }
+            };
+
+            const handleExportConfirm = () => {
+                setShowExportModal(false);
+                const headers = ["رقم الطلب", "التاريخ", "العميل", "السيارة", "الخدمات المنفذة", "الفني", "المبلغ الكلي", "الحالة", "ملاحظات"];
+                const rows = filteredOrders.map(wo => [
+                    wo.id, wo.date, wo.customerName, wo.vehicle, wo.services.join(' - '), wo.technician, wo.total, wo.status, (wo.notes||'').replace(/\n/g, ' ')
+                ]);
+                exportToExcelCSV(`الزيارات_وسجل_الخدمات_${new Date().toISOString().split('T')[0]}.csv`, headers, rows);
+                addToast("تم تصدير سجل الزيارات إلى Excel بنجاح", "success");
+            };
+
+            return (
+                <div className="space-y-6">
+                    <h2 className="text-2xl font-bold text-gray-800">الزيارات وسجل الخدمات</h2>
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col md:flex-row gap-4">
+                        <input type="text" placeholder="بحث برقم الطلب أو العميل..." className="border rounded-lg px-4 py-2 bg-gray-50 flex-1 min-w-[200px]" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+                        <div className="flex flex-wrap gap-2 w-full md:w-auto">
+                            <input type="date" className="border rounded-lg px-4 py-2 bg-gray-50 flex-1 md:flex-none" value={dateFilter} onChange={e => setDateFilter(e.target.value)} />
+                            <select className="border rounded-lg px-4 py-2 bg-gray-50 flex-1 md:flex-none" value={serviceFilter} onChange={e => setServiceFilter(e.target.value)}>
+                                <option>كل الخدمات</option><option>تبديل زيت</option><option>سفايف</option><option>صيانة دورية 40 ألف</option>
+                            </select>
+                            <select className="border rounded-lg px-4 py-2 bg-gray-50 flex-1 md:flex-none" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+                                <option>الكل</option><option>مكتمل</option><option>قيد العمل</option>
+                            </select>
+                        </div>
+                        <div className="flex gap-2">
+                            <button onClick={() => { setSearchTerm(''); setDateFilter(''); setServiceFilter('كل الخدمات'); setStatusFilter('الكل'); }} className="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg font-medium hover:bg-gray-300 whitespace-nowrap">إعادة ضبط</button>
+                            <button onClick={() => setShowExportModal(true)} className="bg-green-600 text-white flex justify-center items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm shadow-md hover:bg-green-700 whitespace-nowrap w-full md:w-auto"><Icons.Download /> تصدير Excel</button>
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm text-right crm-table">
+                                <thead><tr><th>رقم الطلب</th><th>التاريخ</th><th>العميل</th><th>السيارة</th><th>الخدمات المنفذة</th><th>المبلغ</th><th>الحالة</th><th>الإجراءات</th></tr></thead>
+                                <tbody>
+                                    {filteredOrders.map((wo, i) => (
+                                        <tr key={i}>
+                                            <td className="font-bold text-brand">{wo.id}</td><td>{wo.date}</td><td className="font-medium">{wo.customerName}</td>
+                                            <td dir="ltr" className="text-right">{wo.vehicle}</td><td className="whitespace-normal">{wo.services.join('، ')}</td>
+                                            <td className="font-bold">{formatMoney(wo.total)}</td>
+                                            <td><span className={`px-2 py-1 rounded text-xs font-bold ${wo.status === 'مكتمل' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>{wo.status}</span></td>
+                                            <td className="flex gap-2">
+                                                <button onClick={() => {setSelectedOrder(wo); setShowDetailsModal(true);}} className="text-brand hover:underline font-bold text-xs bg-blue-50 px-3 py-1.5 rounded border border-blue-200">التفاصيل</button>
+                                                <button onClick={() => handleDelete(wo.id)} className="text-red-600 hover:text-red-800 font-bold text-xs bg-red-50 border border-red-200 px-2 py-1.5 rounded"><Icons.Trash /></button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                    {filteredOrders.length === 0 && <tr><td colSpan="8" className="text-center py-10 text-gray-500 font-bold text-lg">لا توجد بيانات حالياً</td></tr>}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <Modal title={`تفاصيل الطلب: ${selectedOrder?.id}`} isOpen={showDetailsModal} onClose={() => setShowDetailsModal(false)}>
+                        {selectedOrder && (
+                            <div className="space-y-4">
+                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-y-4 gap-x-8 bg-gray-50 p-4 rounded-lg border">
+                                    <div><span className="block text-xs text-gray-500">العميل</span><span className="font-bold text-lg">{selectedOrder.customerName}</span></div>
+                                    <div><span className="block text-xs text-gray-500">التاريخ</span><span className="font-bold text-lg">{selectedOrder.date}</span></div>
+                                    <div><span className="block text-xs text-gray-500">الحالة</span><span className={`px-2 py-1 rounded text-xs font-bold ${selectedOrder.status === 'مكتمل' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>{selectedOrder.status}</span></div>
+                                    <div><span className="block text-xs text-gray-500">السيارة</span><span className="font-bold">{selectedOrder.vehicle}</span></div>
+                                    <div><span className="block text-xs text-gray-500">الفني المسؤول</span><span className="font-bold">{selectedOrder.technician}</span></div>
+                                    <div><span className="block text-xs text-gray-500">المبلغ الإجمالي</span><span className="font-bold text-green-600 text-lg">{formatMoney(selectedOrder.total)}</span></div>
+                                </div>
+                                <div>
+                                    <h4 className="font-bold text-gray-700 mb-2 border-b pb-1">الخدمات المنفذة التفصيلية</h4>
+                                    <table className="w-full text-right text-sm border-collapse border border-gray-200">
+                                        <thead className="bg-gray-100"><tr><th className="border p-2">الخدمة</th><th className="border p-2">التفاصيل</th><th className="border p-2 text-center">الكمية</th><th className="border p-2">السعر</th></tr></thead>
+                                        <tbody>
+                                            {(selectedOrder.detailedServices||[]).map((s,i)=> <tr key={i}><td className="border p-2 font-bold">{s.name}</td><td className="border p-2 text-xs">{Object.values(s.details||{}).join(' ')}</td><td className="border p-2 text-center">{s.qty||1}</td><td className="border p-2">{formatMoney(s.price)}</td></tr>)}
+                                            {(!selectedOrder.detailedServices || selectedOrder.detailedServices.length === 0) && <tr><td colSpan="4" className="border p-2 text-center">{selectedOrder.services.join('، ')}</td></tr>}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div><h4 className="font-bold text-gray-700 mb-2 border-b pb-1">ملاحظات ورقة العمل</h4><p className="text-sm bg-yellow-50 p-3 rounded border border-yellow-200 leading-relaxed whitespace-pre-wrap">{selectedOrder.notes || 'لا توجد ملاحظات.'}</p></div>
+                                <div className="flex justify-end pt-4 border-t gap-2">
+                                    <button onClick={() => setShowDetailsModal(false)} className="px-4 py-2 bg-gray-200 rounded font-bold">إغلاق</button>
+                                    <button onClick={() => { setShowDetailsModal(false); const cust = db.customers.find(c => c.name === selectedOrder.customerName); if(cust) onViewProfile(cust); }} className="bg-brand text-white px-4 py-2 rounded font-bold shadow-md hover:bg-blue-700">فتح ملف العميل الكامل</button>
+                                </div>
+                            </div>
+                        )}
+                    </Modal>
+
+                    <Modal title="معاينة تصدير البيانات إلى Excel" isOpen={showExportModal} onClose={() => setShowExportModal(false)} size="max-w-md">
+                        <div className="space-y-4">
+                            <div className="bg-green-50 p-4 rounded-lg border border-green-200">
+                                <h4 className="font-bold text-green-800 mb-2">ملخص البيانات المراد تصديرها</h4>
+                                <ul className="text-sm space-y-2 text-green-900">
+                                    <li><strong>الملف:</strong> سجل_الزيارات.csv (متوافق مع Excel)</li>
+                                    <li><strong>عدد السجلات المتوافقة:</strong> {filteredOrders.length} صف</li>
+                                    <li><strong>الفلاتر المطبقة:</strong> {searchTerm || dateFilter || serviceFilter !== 'كل الخدمات' || statusFilter !== 'الكل' ? ' نعم (يتم تصدير البيانات المصفاة فقط)' : ' لا يوجد (تصدير جميع السجلات)'}</li>
+                                </ul>
+                            </div>
+                            <div className="flex justify-end gap-3 pt-4 border-t mt-4">
+                                <button onClick={() => setShowExportModal(false)} className="px-4 py-2 bg-gray-200 rounded font-bold">إلغاء</button>
+                                <button onClick={handleExportConfirm} className="px-4 py-2 bg-green-600 text-white rounded font-bold shadow-md hover:bg-green-700 flex items-center gap-2"><Icons.Download /> تأكيد وبدء التنزيل</button>
+                            </div>
+                        </div>
+                    </Modal>
+                </div>
+            );
+        };
+
+        // 5. FollowUps
+        const FollowUps = ({ db, updateDb, onViewProfile, addToast }) => {
+            const [filterDate, setFilterDate] = useState('');
+            const [filterType, setFilterType] = useState('جميع الأنواع');
+            const [filterStatus, setFilterStatus] = useState('الكل');
+
+            const [showFormModal, setShowFormModal] = useState(false);
+            const [showDetailsModal, setShowDetailsModal] = useState(false);
+            const [isEditing, setIsEditing] = useState(false);
+            const [selectedId, setSelectedId] = useState(null);
+
+            const defaultForm = { customer: '', phone: '', type: 'متابعة رضا العميل', reason: '', date: new Date().toISOString().split('T')[0], targetDate: '', emp: 'نور', status: 'جديدة', notes: '' };
+            const [formData, setFormData] = useState(defaultForm);
+
+            const filteredData = useMemo(() => {
+                return db.followUps.filter(f => {
+                    if (filterDate && f.date !== filterDate) return false;
+                    if (filterType !== 'جميع الأنواع' && f.type !== filterType) return false;
+                    if (filterStatus !== 'الكل' && f.status !== filterStatus) return false;
+                    return true;
+                });
+            }, [db.followUps, filterDate, filterType, filterStatus]);
+
+            const handleStatusChange = (id, newStatus) => {
+                updateDb('followUps', db.followUps.map(item => item.id === id ? { ...item, status: newStatus } : item));
+                addToast("تم تحديث حالة المتابعة", "success");
+            };
+
+            const handleOpenAdd = () => { setFormData(defaultForm); setIsEditing(false); setShowFormModal(true); };
+            const handleOpenEdit = (item) => { setFormData(item); setSelectedId(item.id); setIsEditing(true); setShowFormModal(true); };
+            const handleOpenDetails = (item) => { setFormData(item); setShowDetailsModal(true); };
+
+            const handleDelete = (id) => {
+                if(window.confirm('هل أنت متأكد من الحذف؟')){
+                    updateDb('followUps', db.followUps.filter(f => f.id !== id));
+                    addToast('تم الحذف بنجاح', 'success');
+                }
+            };
+
+            const handleSaveForm = () => {
+                if(!formData.customer || !formData.phone) return addToast("الرجاء إدخال بيانات العميل", "error");
+                if (isEditing) {
+                    updateDb('followUps', db.followUps.map(item => item.id === selectedId ? { ...formData, id: selectedId } : item));
+                    addToast("تم تعديل المتابعة بنجاح", "success");
+                } else {
+                    updateDb('followUps', [{ ...formData, id: Date.now() }, ...db.followUps]);
+                    addToast("تم إضافة المتابعة بنجاح", "success");
+                }
+                setShowFormModal(false);
+            };
+
+            const isOverdue = (dateStr) => {
+                if(!dateStr) return false;
+                return new Date(dateStr) < new Date(new Date().toISOString().split('T')[0]);
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                        <h2 className="text-2xl font-bold text-gray-800">إدارة المتابعات</h2>
+                        <button onClick={handleOpenAdd} className="bg-brand text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 hover:bg-blue-700 shadow-md w-full sm:w-auto"><Icons.Plus /> إضافة متابعة يدوية</button>
+                    </div>
+                    
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-2">
+                        <div className="bg-white p-4 rounded-xl border border-l-4 border-l-blue-500 shadow-sm"><p className="text-sm text-gray-500">إجمالي المتابعات</p><p className="text-2xl font-bold">{db.followUps.length}</p></div>
+                        <div className="bg-white p-4 rounded-xl border border-l-4 border-l-yellow-500 shadow-sm"><p className="text-sm text-gray-500">قيد المتابعة</p><p className="text-2xl font-bold">{db.followUps.filter(d => d.status === 'قيد المتابعة').length}</p></div>
+                        <div className="bg-white p-4 rounded-xl border border-l-4 border-l-red-500 shadow-sm"><p className="text-sm text-gray-500">جديدة / متأخرة</p><p className="text-2xl font-bold text-red-600">{db.followUps.filter(d => d.status === 'جديدة').length}</p></div>
+                        <div className="bg-white p-4 rounded-xl border border-l-4 border-l-green-500 shadow-sm"><p className="text-sm text-gray-500">مكتملة</p><p className="text-2xl font-bold">{db.followUps.filter(d => d.status === 'مكتملة').length}</p></div>
+                    </div>
+
+                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-wrap gap-4">
+                        <input type="date" className="border rounded-lg px-4 py-2 bg-gray-50 flex-1 min-w-[150px]" value={filterDate} onChange={e=>setFilterDate(e.target.value)} />
+                        <select className="border rounded-lg px-4 py-2 bg-gray-50 flex-1 min-w-[150px]" value={filterType} onChange={e=>setFilterType(e.target.value)}>
+                            <option>جميع الأنواع</option><option>تذكير تغيير زيت</option><option>متابعة رضا العميل</option><option>متابعة شكوى</option><option>متابعة عميل غير نشط</option>
+                        </select>
+                        <select className="border rounded-lg px-4 py-2 bg-gray-50 flex-1 min-w-[150px]" value={filterStatus} onChange={e=>setFilterStatus(e.target.value)}>
+                            <option>الكل</option><option>جديدة</option><option>قيد المتابعة</option><option>مؤجلة</option><option>مكتملة</option>
+                        </select>
+                        <button onClick={() => {setFilterDate(''); setFilterType('جميع الأنواع'); setFilterStatus('الكل');}} className="bg-gray-200 px-4 py-2 rounded-lg font-medium">إعادة ضبط</button>
+                    </div>
+
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm text-right crm-table">
+                                <thead><tr><th>العميل</th><th>نوع المتابعة</th><th>السبب</th><th>تاريخ الاستهداف</th><th>الحالة</th><th>الإجراءات</th></tr></thead>
+                                <tbody>
+                                    {filteredData.map(f => {
+                                        const overdue = f.status !== 'مكتملة' && isOverdue(f.targetDate);
+                                        return (
+                                        <tr key={f.id} className={overdue ? 'bg-red-50 hover:bg-red-100' : ''}>
+                                            <td><div className="font-bold text-gray-800">{f.customer}</div><div className="text-xs text-gray-500 dir-ltr text-right">{f.phone}</div></td>
+                                            <td><span className="px-2 py-1 bg-gray-100 text-gray-700 rounded text-xs border">{f.type}</span></td>
+                                            <td className="text-gray-600 max-w-[150px] truncate" title={f.reason}>{f.reason}</td>
+                                            <td>
+                                                <span className={`font-bold ${overdue ? 'text-red-600' : 'text-brand'}`}>{f.targetDate || '-'}</span>
+                                                {overdue && <span className="block text-[10px] text-red-500 font-bold">متأخرة!</span>}
+                                            </td>
+                                            <td>
+                                                <select className={`px-2 py-1.5 rounded text-xs font-bold border cursor-pointer outline-none ${f.status==='جديدة'?'bg-blue-50 text-blue-700 border-blue-200':f.status==='قيد المتابعة'?'bg-yellow-50 text-yellow-700 border-yellow-200':f.status==='مكتملة'?'bg-green-50 text-green-700 border-green-200':'bg-gray-100 text-gray-700 border-gray-300'}`} value={f.status} onChange={(e) => handleStatusChange(f.id, e.target.value)}>
+                                                    <option>جديدة</option><option>قيد المتابعة</option><option>مؤجلة</option><option>مكتملة</option>
+                                                </select>
+                                            </td>
+                                            <td>
+                                                <div className="flex gap-2 items-center flex-wrap">
+                                                    <button onClick={() => handleOpenDetails(f)} className="text-gray-600 hover:text-brand font-bold text-xs bg-gray-100 px-2 py-1.5 rounded border border-gray-300">التفاصيل</button>
+                                                    <button onClick={() => handleOpenEdit(f)} className="text-brand hover:text-blue-800 font-bold text-xs bg-blue-50 px-2 py-1.5 rounded border border-blue-200">تعديل</button>
+                                                    <button onClick={() => handleDelete(f.id)} className="text-red-600 hover:text-red-800 font-bold text-xs bg-red-50 px-2 py-1.5 rounded border border-red-200"><Icons.Trash /></button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    )})}
+                                    {filteredData.length === 0 && <tr><td colSpan="6" className="text-center py-8 text-gray-500 font-bold text-lg">لا توجد بيانات حالياً</td></tr>}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <Modal title={isEditing ? 'تعديل المتابعة' : 'إضافة متابعة جديدة'} isOpen={showFormModal} onClose={() => setShowFormModal(false)}>
+                        <div className="space-y-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div><label className="block text-sm font-medium mb-1">اسم العميل *</label><input type="text" className="w-full border p-2 rounded" value={formData.customer} onChange={e=>setFormData({...formData, customer: e.target.value})} /></div>
+                                <div><label className="block text-sm font-medium mb-1">رقم الهاتف *</label><input type="text" className="w-full border p-2 rounded" value={formData.phone} onChange={e=>setFormData({...formData, phone: e.target.value})} dir="ltr" /></div>
+                                <div>
+                                    <label className="block text-sm font-medium mb-1">نوع المتابعة</label>
+                                    <select className="w-full border p-2 rounded" value={formData.type} onChange={e=>setFormData({...formData, type: e.target.value})}>
+                                        <option>متابعة رضا العميل</option><option>تذكير تغيير زيت</option><option>عرض خاص</option><option>متابعة خدمة مؤجلة</option><option>متابعة عميل غير نشط</option><option>متابعة شكوى</option>
+                                    </select>
+                                </div>
+                                <div><label className="block text-sm font-medium mb-1">تاريخ الاستهداف للتنفيذ</label><input type="date" className="w-full border p-2 rounded" value={formData.targetDate} onChange={e=>setFormData({...formData, targetDate: e.target.value})} /></div>
+                                <div className="sm:col-span-2"><label className="block text-sm font-medium mb-1">السبب الأساسي</label><input type="text" className="w-full border p-2 rounded" value={formData.reason} onChange={e=>setFormData({...formData, reason: e.target.value})} /></div>
+                                <div className="sm:col-span-2"><label className="block text-sm font-medium mb-1">ملاحظات داخلية</label><textarea className="w-full border p-2 rounded h-20" value={formData.notes} onChange={e=>setFormData({...formData, notes: e.target.value})}></textarea></div>
+                            </div>
+                            <div className="flex justify-end gap-3 pt-4 border-t mt-4">
+                                <button onClick={() => setShowFormModal(false)} className="px-5 py-2 bg-gray-200 rounded font-bold">إلغاء</button>
+                                <button onClick={handleSaveForm} className="px-5 py-2 bg-brand text-white rounded font-bold shadow-md hover:bg-blue-700">حفظ المتابعة</button>
+                            </div>
+                        </div>
+                    </Modal>
+
+                    <Modal title={`تفاصيل بطاقة المتابعة`} isOpen={showDetailsModal} onClose={() => setShowDetailsModal(false)}>
+                        <div className="space-y-4 text-sm">
+                            <div className="bg-gray-50 p-4 rounded-lg border flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                                <div><h4 className="font-bold text-xl text-brand">{formData.customer}</h4><p className="text-gray-500 font-bold mt-1" dir="ltr">{formData.phone}</p></div>
+                                <div><span className={`px-4 py-2 rounded-lg text-sm font-bold border ${formData.status==='جديدة'?'bg-blue-50 text-blue-700 border-blue-200':formData.status==='قيد المتابعة'?'bg-yellow-50 text-yellow-700 border-yellow-200':formData.status==='مكتملة'?'bg-green-50 text-green-700 border-green-200':'bg-gray-100 text-gray-700 border-gray-300'}`}>{formData.status}</span></div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4 border-b pb-4">
+                                <div><span className="block text-xs text-gray-500">نوع المتابعة</span><span className="font-bold text-base">{formData.type}</span></div>
+                                <div><span className="block text-xs text-gray-500">تاريخ الاستهداف</span><span className="font-bold text-red-600 text-base">{formData.targetDate || '-'}</span></div>
+                                <div className="col-span-2"><span className="block text-xs text-gray-500">السبب الأساسي</span><span className="font-bold text-base text-gray-800">{formData.reason || '-'}</span></div>
+                            </div>
+                            <div><span className="block font-bold text-gray-700 mb-2">ملاحظات ونتائج التواصل:</span><div className="bg-yellow-50 p-4 rounded-lg border border-yellow-200 text-gray-800 min-h-[80px] leading-relaxed whitespace-pre-wrap">{formData.notes || <span className="text-gray-400 italic">لا توجد ملاحظات.</span>}</div></div>
+                            <div className="flex justify-end gap-3 pt-4 border-t mt-4">
+                                <button onClick={() => { setShowDetailsModal(false); window.open(generateWhatsAppLink(formData.phone), '_blank'); addToast("تم فتح تطبيق WhatsApp", "success"); }} className="px-5 py-2 bg-green-500 text-white rounded font-bold flex items-center gap-2 hover:bg-green-600 shadow-md"><Icons.Message /> إرسال عبر WhatsApp</button>
+                                <button onClick={() => setShowDetailsModal(false)} className="px-5 py-2 border border-gray-300 rounded font-bold hover:bg-gray-50">إغلاق التقرير</button>
+                            </div>
+                        </div>
+                    </Modal>
+                </div>
+            );
+        };
+
+        // 6. Communication
+        const Communication = ({ db, updateDb, addToast }) => {
+            const [activeTab, setActiveTab] = useState('queue');
+            const [selectedQueueItem, setSelectedQueueItem] = useState(null);
+            const [contactForm, setContactForm] = useState({ result: 'تم الرد', rating: 0, comment: '', recommend: 'نعم', needsFollowUp: false, notes: '' });
+            
+            const [manualPhone, setManualPhone] = useState('');
+            const [manualMsg, setManualMsg] = useState('');
+            const [selectedTemplate, setSelectedTemplate] = useState('');
+
+            const queue = db.communicationQueue.filter(q => q.status !== 'مكتمل');
+
+            const openContactForm = (item) => {
+                setSelectedQueueItem(item);
+                setContactForm({ result: 'تم الرد', rating: 0, comment: '', recommend: 'نعم', needsFollowUp: false, notes: '' });
+            };
+
+            const handleDelete = (id) => {
+                if(window.confirm('هل أنت متأكد من إزالة هذه المهمة من القائمة؟')){
+                    updateDb('communicationQueue', db.communicationQueue.filter(q => q.id !== id));
+                    addToast('تم حذف المهمة بنجاح', 'success');
+                }
+            };
+
+            const handleSaveContactResult = () => {
+                const { rating, result, comment, recommend, needsFollowUp, notes } = contactForm;
+                const updatedQueue = db.communicationQueue.map(q => q.id === selectedQueueItem.id ? {...q, status: 'مكتمل'} : q);
+                
+                let newFeedback = [...db.feedback];
+                let newFollowUps = [...db.followUps];
+
+                if (rating > 0 && result === 'تم الرد') {
+                    newFeedback.push({ id: Date.now(), customer: selectedQueueItem.customerName, orderId: '-', date: new Date().toLocaleDateString('ar-IQ'), rating, comment, goodExp: rating >=3?'نعم':'لا', recommend, status: rating<=2?'يحتاج متابعة':'مغلق' });
+                }
+
+                if ((rating > 0 && rating <= 2) || needsFollowUp) {
+                    newFollowUps.push({ id: Date.now()+1, customer: selectedQueueItem.customerName, phone: selectedQueueItem.phone, type: 'متابعة شكوى', reason: 'متابعة بناءً على اتصال خدمة العملاء', date: new Date().toLocaleDateString('ar-IQ'), targetDate: new Date().toLocaleDateString('en-CA'), emp: 'المدير', status: 'جديدة', notes: notes });
+                    addToast("تم حفظ التقييم وتم توليد مهمة متابعة عاجلة للإدارة!", "error");
+                } else {
+                    addToast("تم حفظ النتيجة وإغلاق مهمة التواصل بنجاح.", "success");
+                }
+
+                updateDb('communicationQueue', updatedQueue);
+                updateDb('feedback', newFeedback);
+                updateDb('followUps', newFollowUps);
+                setSelectedQueueItem(null);
+            };
+
+            const applyTemplateVars = (text, cust) => {
+                let res = text;
+                res = res.replace(/\[اسم العميل\]/g, cust?.name ? cust.name.split(' ')[0] : '');
+                res = res.replace(/\[نوع السيارة\]/g, cust?.vehicleType || '');
+                res = res.replace(/\[آخر زيارة\]/g, cust?.lastVisit || '');
+                return res;
+            };
+
+            const handleTemplateSelect = (e) => {
+                const tId = parseInt(e.target.value);
+                setSelectedTemplate(e.target.value);
+                const tmpl = db.templates.find(t => t.id === tId);
+                if (tmpl) {
+                    let msg = tmpl.text;
+                    if (tmpl.useGreeting && !msg.includes('مرحبا')) {
+                        msg = `مرحبا [اسم العميل]،\n${msg}`;
+                    }
+                    const cust = db.customers.find(c => c.phone === manualPhone);
+                    setManualMsg(applyTemplateVars(msg, cust));
+                }
+            };
+
+            useEffect(() => {
+                if(selectedTemplate) {
+                    const tmpl = db.templates.find(t => t.id === parseInt(selectedTemplate));
+                    const cust = db.customers.find(c => c.phone === manualPhone);
+                    if(tmpl) {
+                        let msg = tmpl.text;
+                        if (tmpl.useGreeting && !msg.includes('مرحبا')) msg = `مرحبا [اسم العميل]،\n${msg}`;
+                        setManualMsg(applyTemplateVars(msg, cust));
+                    }
+                }
+            }, [manualPhone, selectedTemplate, db.customers, db.templates]);
+
+            const handleManualWhatsApp = () => {
+                if(!manualPhone) return addToast("يرجى اختيار العميل أولاً", "error");
+                if(!manualMsg) return addToast("نص الرسالة فارغ", "error");
+                window.open(generateWhatsAppLink(manualPhone, manualMsg), '_blank');
+                addToast("تم التوجيه للواتساب", "success");
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end border-b pb-2 gap-4">
+                        <h2 className="text-2xl font-bold text-gray-800">العملاء المطلوب التواصل معهم (الأتمتة الذكية)</h2>
+                        <div className="flex gap-2 w-full sm:w-auto">
+                            <button onClick={()=>setActiveTab('queue')} className={`flex-1 sm:flex-none px-4 py-2 font-bold rounded-t-lg ${activeTab==='queue'?'bg-brand text-white':'bg-gray-200 text-gray-600'}`}>قائمة المهام</button>
+                            <button onClick={()=>setActiveTab('manual')} className={`flex-1 sm:flex-none px-4 py-2 font-bold rounded-t-lg ${activeTab==='manual'?'bg-brand text-white':'bg-gray-200 text-gray-600'}`}>مراسلة حرة</button>
+                        </div>
+                    </div>
+
+                    {activeTab === 'queue' ? (
+                        <div className="animate-fade-in space-y-4">
+                            <div className="bg-blue-50 border border-blue-200 p-4 rounded-xl flex flex-wrap gap-4 text-blue-900 text-sm font-bold">
+                                <p className="bg-white px-3 py-1 rounded shadow-sm">إجمالي المهام المعلقة: {queue.length}</p>
+                                <p className="bg-white px-3 py-1 rounded shadow-sm">تقييم مطلوب: {queue.filter(q=>q.type==='رضا العميل').length}</p>
+                                <p className="bg-white px-3 py-1 rounded shadow-sm">تذكير زيت: {queue.filter(q=>q.type.includes('زيت')).length}</p>
+                            </div>
+
+                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-sm text-right crm-table">
+                                        <thead className="bg-gray-100"><tr><th>اسم العميل</th><th>رقم الهاتف</th><th>السيارة</th><th>آخر زيارة</th><th>السبب</th><th>الأولوية</th><th>الإجراءات</th></tr></thead>
+                                        <tbody>
+                                            {queue.map(q => (
+                                                <tr key={q.id}>
+                                                    <td className="font-bold text-gray-900">{q.customerName}</td><td dir="ltr" className="text-right">{q.phone}</td>
+                                                    <td>{q.vehicle}</td><td>{q.lastVisit}</td><td className="font-bold text-brand">{q.reason}</td>
+                                                    <td><span className={`px-2 py-1 rounded text-xs ${q.priority==='عالية'?'bg-red-100 text-red-700':'bg-gray-200'}`}>{q.priority}</span></td>
+                                                    <td>
+                                                        <div className="flex gap-2">
+                                                            <button onClick={()=>openContactForm(q)} className="bg-brand text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-blue-700 shadow-sm">تواصل</button>
+                                                            <button onClick={()=>{ window.open(generateWhatsAppLink(q.phone),'_blank'); addToast("تم فتح الواتساب","success"); }} className="bg-green-500 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-green-600 shadow-sm flex items-center"><Icons.Message /></button>
+                                                            <button onClick={()=>handleDelete(q.id)} className="bg-red-50 text-red-600 px-3 py-1.5 rounded text-xs font-bold hover:bg-red-100 shadow-sm border border-red-200"><Icons.Trash /></button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                            {queue.length === 0 && <tr><td colSpan="7" className="text-center p-12 text-gray-500 font-bold text-xl">عمل رائع! تم إنجاز كافة مهام التواصل لليوم.</td></tr>}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <Modal title={`فورمة نتيجة التواصل: ${selectedQueueItem?.customerName}`} isOpen={!!selectedQueueItem} onClose={()=>setSelectedQueueItem(null)}>
+                                {selectedQueueItem && (
+                                    <div className="space-y-5">
+                                        <div className="bg-gray-50 p-4 rounded border text-sm flex justify-between items-center">
+                                            <div><p className="text-gray-500 text-xs">العميل المستهدف:</p><p className="font-bold text-lg">{selectedQueueItem.customerName}</p></div>
+                                            <div className="text-left"><p className="text-gray-500 text-xs">السبب:</p><p className="font-bold text-brand">{selectedQueueItem.reason}</p></div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                            <div>
+                                                <label className="block text-sm font-bold mb-1">نتيجة التواصل *</label>
+                                                <select className="w-full border p-3 rounded bg-white shadow-sm" value={contactForm.result} onChange={e=>setContactForm({...contactForm, result:e.target.value})}>
+                                                    <option>تم الرد</option><option>لم يرد</option><option>مغلق / غير متاح</option><option>تم التأجيل</option>
+                                                </select>
+                                            </div>
+                                            {contactForm.result === 'تم الرد' && (
+                                                <div className="bg-yellow-50 p-3 rounded border border-yellow-200 flex flex-col justify-center items-center">
+                                                    <label className="block text-xs font-bold mb-1 text-yellow-800">تقييم العميل للخدمة (1-5)</label>
+                                                    <div className="flex gap-2 text-3xl cursor-pointer">
+                                                        {[1,2,3,4,5].map(star => (
+                                                            <span key={star} onClick={()=>setContactForm({...contactForm, rating:star})} className={star <= contactForm.rating ? 'text-yellow-400' : 'text-gray-300 hover:text-yellow-200'}>★</span>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {contactForm.result === 'تم الرد' && (
+                                            <div className="space-y-4 animate-fade-in border-t pt-4">
+                                                <div><label className="block text-sm font-bold mb-1">رأي العميل وما قاله حرفياً</label><textarea className="w-full border p-3 rounded h-24 bg-white shadow-sm" placeholder="اكتب تفاصيل المحادثة هنا..." value={contactForm.comment} onChange={e=>setContactForm({...contactForm, comment:e.target.value})}></textarea></div>
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                                    <div><label className="block text-sm font-bold mb-1">هل ينصح بالورشة؟</label><select className="w-full border p-3 rounded bg-white shadow-sm" value={contactForm.recommend} onChange={e=>setContactForm({...contactForm, recommend:e.target.value})}><option>نعم</option><option>لا</option></select></div>
+                                                    <div className="flex items-center"><label className="flex items-center gap-2 text-sm font-bold cursor-pointer bg-red-50 p-3 rounded border border-red-200 w-full"><input type="checkbox" className="w-5 h-5 text-red-600 rounded" checked={contactForm.needsFollowUp} onChange={e=>setContactForm({...contactForm, needsFollowUp:e.target.checked})} /> العميل مستاء ويحتاج لمتابعة الإدارة</label></div>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <div><label className="block text-sm font-bold mb-1">ملاحظات الموظف الداخلية (للسجل)</label><input type="text" className="w-full border p-3 rounded bg-gray-50 shadow-sm" value={contactForm.notes} onChange={e=>setContactForm({...contactForm, notes:e.target.value})} /></div>
+
+                                        <div className="flex flex-col sm:flex-row justify-end gap-3 pt-4 border-t mt-4">
+                                            <button onClick={()=>setSelectedQueueItem(null)} className="px-6 py-3 bg-gray-200 rounded font-bold w-full sm:w-auto">إلغاء</button>
+                                            <button onClick={handleSaveContactResult} className="px-6 py-3 bg-brand text-white rounded font-bold shadow-md hover:bg-blue-700 w-full sm:w-auto flex justify-center items-center gap-2"><Icons.Check/> حفظ وتحديث السجل</button>
+                                        </div>
+                                    </div>
+                                )}
+                            </Modal>
+                        </div>
+                    ) : (
+                        <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm space-y-5 max-w-2xl animate-fade-in">
+                            <h3 className="font-bold text-lg mb-4 border-b pb-2">إرسال رسالة يدوية سريعة</h3>
+                            <div><label className="block text-sm font-bold mb-1">العميل المستهدف *</label><select className="w-full border p-3 rounded bg-gray-50 focus:bg-white" value={manualPhone} onChange={e=>setManualPhone(e.target.value)}><option value="">-- اختر العميل --</option>{db.customers.map(c => <option key={c.id} value={c.phone}>{c.name} ({c.phone})</option>)}</select></div>
+                            <div>
+                                <label className="block text-sm font-bold mb-1 text-gray-700">قالب الرسالة (اختياري)</label>
+                                <select className="w-full border p-3 rounded bg-gray-50 focus:bg-white mb-2" value={selectedTemplate} onChange={handleTemplateSelect}>
+                                    <option value="">-- كتابة رسالة مخصصة --</option>
+                                    {db.templates.map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+                                </select>
+                                <textarea className="w-full border rounded p-3 bg-gray-50 focus:bg-white h-32 leading-relaxed" placeholder="اكتب رسالتك هنا..." value={manualMsg} onChange={e=>setManualMsg(e.target.value)}></textarea>
+                            </div>
+                            <div className="pt-4 border-t"><button onClick={handleManualWhatsApp} className="w-full sm:w-auto bg-green-500 text-white px-8 py-3 rounded-lg font-bold hover:bg-green-600 shadow-md flex items-center justify-center gap-2"><Icons.Message/> إرسال عبر WhatsApp</button></div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // 7. Feedback
+        const Feedback = ({ db, updateDb, addToast }) => {
+            const handleDelete = (id) => {
+                if(window.confirm('هل أنت متأكد من الحذف؟')){
+                    updateDb('feedback', db.feedback.filter(f => f.id !== id));
+                    addToast('تم الحذف بنجاح', 'success');
+                }
+            };
+            return (
+                <div className="space-y-6">
+                    <h2 className="text-2xl font-bold text-gray-800">التقارير والفيدباك</h2>
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm text-right crm-table">
+                                <thead><tr><th>التاريخ</th><th>العميل</th><th>التقييم</th><th>التعليق المكتوب</th><th>التوصية</th><th>الحالة</th><th>الإجراءات</th></tr></thead>
+                                <tbody>
+                                    {db.feedback.map(fb => (
+                                        <tr key={fb.id} className={fb.rating <= 2 ? 'bg-red-50' : fb.rating >= 4 ? 'bg-green-50/30' : ''}>
+                                            <td className="font-medium">{fb.date}</td><td className="font-bold text-gray-800">{fb.customer}</td>
+                                            <td><div className="flex text-yellow-400 text-lg">{[...Array(5)].map((_, i) => <span key={i} className={i<fb.rating?'text-yellow-400':'text-gray-300'}>★</span>)}</div></td>
+                                            <td className="max-w-md truncate whitespace-normal leading-relaxed" title={fb.comment}>{fb.comment || '-'}</td>
+                                            <td><span className={`px-2 py-1 rounded text-xs font-bold ${fb.recommend==='نعم'?'bg-green-100 text-green-800':'bg-red-100 text-red-800'}`}>{fb.recommend}</span></td>
+                                            <td><span className={`px-2 py-1 rounded text-xs font-bold ${fb.status==='مغلق'?'bg-gray-200 text-gray-700':'bg-red-100 text-red-700'}`}>{fb.status}</span></td>
+                                            <td><button onClick={()=>handleDelete(fb.id)} className="text-red-600 bg-red-50 px-2 py-1 rounded border border-red-200"><Icons.Trash /></button></td>
+                                        </tr>
+                                    ))}
+                                    {db.feedback.length === 0 && <tr><td colSpan="7" className="text-center p-8 text-gray-500 font-bold">لا توجد بيانات حالياً</td></tr>}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // 8. Offers
+        const Offers = ({ db, updateDb, addToast }) => {
+            const [showModal, setShowModal] = useState(false);
+            const [step, setStep] = useState(1);
+            const [campaignData, setCampaignData] = useState({ title: '', text: '', target: 'الكل', type: 'خصم تبديل زيت' });
+            const [selectedTemplate, setSelectedTemplate] = useState('');
+            const [filteredCustomers, setFilteredCustomers] = useState([]);
+            const [selectedCustomerIds, setSelectedCustomerIds] = useState([]);
+
+            const applyTemplateVars = (text, cust) => {
+                let res = text;
+                res = res.replace(/\[اسم العميل\]/g, cust?.name ? cust.name.split(' ')[0] : '');
+                res = res.replace(/\[نوع السيارة\]/g, cust?.vehicleType || '');
+                res = res.replace(/\[آخر زيارة\]/g, cust?.lastVisit || '');
+                return res;
+            };
+
+            const handleTemplateSelect = (e) => {
+                const tId = parseInt(e.target.value);
+                setSelectedTemplate(e.target.value);
+                const tmpl = db.templates.find(t => t.id === tId);
+                if (tmpl) {
+                    let msg = tmpl.text;
+                    if (tmpl.useGreeting && !msg.includes('مرحبا')) msg = `مرحبا [اسم العميل]،\n${msg}`;
+                    setCampaignData({...campaignData, text: msg});
+                }
+            };
+
+            const handleNextStep = () => {
+                if(!campaignData.title || !campaignData.text) return addToast("الرجاء إدخال اسم الحملة ونص الرسالة", "error");
+                let matched = db.customers;
+                if (campaignData.target === 'العملاء VIP') matched = db.customers.filter(c => c.segment === 'VIP');
+                else if (campaignData.target === 'العملاء الدائمون') matched = db.customers.filter(c => c.segment === 'عميل دائم');
+                else if (campaignData.target === 'العملاء الجدد (زيارة واحدة)') matched = db.customers.filter(c => c.segment === 'عميل جديد');
+                
+                setFilteredCustomers(matched);
+                setSelectedCustomerIds(matched.map(c => c.id));
+                setStep(2);
+            };
+
+            const handleSendSelected = () => {
+                if(selectedCustomerIds.length === 0) return addToast("الرجاء تحديد عميل واحد على الأقل", "error");
+                updateDb('offers', [{ id: Date.now(), title: campaignData.title, type: campaignData.type, targetCount: selectedCustomerIds.length, revenue: 0, status: 'نشط' }, ...db.offers]);
+                setShowModal(false); setStep(1);
+                addToast(`تم تأكيد الحملة! سيتم إرسال الرسائل لـ ${selectedCustomerIds.length} عميل.`, "success");
+            };
+
+            const handleDelete = (id) => {
+                if(window.confirm('هل أنت متأكد من الحذف؟')){
+                    updateDb('offers', db.offers.filter(o => o.id !== id));
+                    addToast('تم الحذف بنجاح', 'success');
+                }
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                        <h2 className="text-2xl font-bold text-gray-800">العروض والحملات التسويقية</h2>
+                        <button onClick={() => {setStep(1); setCampaignData({ title: '', text: '', target: 'الكل', type: 'خصم تبديل زيت' }); setShowModal(true);}} className="bg-brand text-white px-4 py-2 rounded-lg text-sm font-medium flex gap-2 items-center justify-center hover:bg-blue-700 shadow-md w-full sm:w-auto"><Icons.Plus /> إنشاء حملة جديدة</button>
+                    </div>
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm text-right crm-table">
+                                <thead><tr><th>اسم الحملة/العرض</th><th>النوع</th><th>المستهدفين</th><th>الإيرادات المسجلة</th><th>الحالة</th><th>الإجراءات</th></tr></thead>
+                                <tbody>
+                                    {db.offers.map(o => (
+                                        <tr key={o.id}>
+                                            <td className="font-bold text-gray-900">{o.title}</td><td><span className="bg-purple-100 text-purple-800 px-2 py-1 rounded text-xs">{o.type}</span></td>
+                                            <td><span className="font-bold text-brand text-lg">{o.targetCount}</span> عميل</td><td className="font-bold text-green-600 text-lg">{formatMoney(o.revenue)}</td>
+                                            <td><span className={`px-3 py-1 rounded-full text-xs font-bold ${o.status==='نشط'?'bg-green-100 text-green-700':'bg-gray-200'}`}>{o.status}</span></td>
+                                            <td><button onClick={()=>handleDelete(o.id)} className="text-red-600 bg-red-50 px-2 py-1 rounded border border-red-200"><Icons.Trash /></button></td>
+                                        </tr>
+                                    ))}
+                                    {db.offers.length === 0 && <tr><td colSpan="6" className="text-center p-8 text-gray-500 font-bold">لا توجد بيانات حالياً</td></tr>}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <Modal title={step === 1 ? "بناء حملة تسويقية (الخطوة 1)" : `قائمة المستهدفين للحملة (${filteredCustomers.length} عميل)`} isOpen={showModal} onClose={() => setShowModal(false)} size={step === 1 ? "max-w-3xl" : "max-w-4xl"}>
+                        {step === 1 ? (
+                            <div className="space-y-5">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                                    <div><label className="block text-sm font-bold mb-1 text-gray-700">اسم الحملة *</label><input type="text" className="w-full border p-3 rounded bg-gray-50 focus:bg-white" value={campaignData.title} onChange={e=>setCampaignData({...campaignData, title:e.target.value})} placeholder="مثال: عرض الصيف لتبديل الزيت" /></div>
+                                    <div><label className="block text-sm font-bold mb-1 text-gray-700">نوع العرض</label><select className="w-full border p-3 rounded bg-gray-50 focus:bg-white" value={campaignData.type} onChange={e=>setCampaignData({...campaignData, type:e.target.value})}><option>خصم تبديل زيت</option><option>عرض فحص مجاني</option><option>خصم صيانة شاملة</option></select></div>
+                                    <div className="sm:col-span-2"><label className="block text-sm font-bold mb-1 text-gray-700">الاستهداف الذكي *</label><select className="w-full border p-3 rounded bg-gray-50 focus:bg-white" value={campaignData.target} onChange={e=>setCampaignData({...campaignData, target:e.target.value})}><option>الكل (جميع العملاء المسجلين)</option><option>العملاء الدائمون</option><option>العملاء VIP</option><option>العملاء الجدد (زيارة واحدة)</option></select></div>
+                                    <div className="sm:col-span-2">
+                                        <div className="flex justify-between items-center mb-2">
+                                            <label className="block text-sm font-bold text-gray-700">محتوى الرسالة (SMS/WhatsApp) *</label>
+                                            <select className="border text-xs rounded p-1 text-gray-600 bg-white" value={selectedTemplate} onChange={handleTemplateSelect}>
+                                                <option value="">-- تحميل من قالب --</option>
+                                                {db.templates.map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+                                            </select>
+                                        </div>
+                                        <textarea className="w-full border p-4 rounded h-32 bg-gray-50 focus:bg-white text-sm leading-relaxed" placeholder="اكتب عرضك الترويجي هنا (سيتم إضافة اسم العميل آلياً في البداية)..." value={campaignData.text} onChange={e=>setCampaignData({...campaignData, text:e.target.value})}></textarea>
+                                    </div>
+                                </div>
+                                <div className="flex justify-end gap-3 pt-5 border-t mt-5">
+                                    <button onClick={() => setShowModal(false)} className="px-6 py-2.5 bg-gray-200 text-gray-800 rounded font-bold hover:bg-gray-300 transition-colors">إلغاء الأمر</button>
+                                    <button onClick={handleNextStep} className="px-6 py-2.5 bg-brand text-white rounded font-bold shadow-md hover:bg-blue-700 transition-colors flex items-center gap-2">التالي: تصفية العملاء <Icons.Back/></button>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                <div className="bg-blue-50 p-4 rounded-lg text-sm text-blue-900 flex flex-col sm:flex-row justify-between items-center gap-4 border border-blue-200">
+                                    <p className="font-bold">قم بتأكيد العملاء الذين ستصلهم رسائل الحملة:</p>
+                                    <div className="flex gap-2 w-full sm:w-auto"><button onClick={()=>setSelectedCustomerIds(filteredCustomers.map(c=>c.id))} className="flex-1 sm:flex-none text-xs bg-white border border-blue-300 px-3 py-2 rounded font-bold hover:bg-blue-100">تحديد الكل</button><button onClick={()=>setSelectedCustomerIds([])} className="flex-1 sm:flex-none text-xs bg-white border border-blue-300 px-3 py-2 rounded font-bold hover:bg-blue-100">إلغاء التحديد</button></div>
+                                </div>
+                                <div className="border rounded-xl max-h-[40vh] overflow-y-auto main-scroll">
+                                    <table className="w-full text-sm text-right crm-table">
+                                        <thead className="bg-gray-100 sticky top-0 shadow-sm"><tr><th className="w-12 text-center">تحديد</th><th>اسم العميل</th><th>رقم الهاتف</th><th>التصنيف</th></tr></thead>
+                                        <tbody>
+                                            {filteredCustomers.map(c => (
+                                                <tr key={c.id} className="hover:bg-blue-50 cursor-pointer transition-colors" onClick={() => setSelectedCustomerIds(prev => prev.includes(c.id)?prev.filter(i=>i!==c.id):[...prev,c.id])}>
+                                                    <td className="text-center" onClick={(e)=>e.stopPropagation()}><input type="checkbox" className="w-5 h-5 text-brand rounded cursor-pointer" checked={selectedCustomerIds.includes(c.id)} readOnly /></td>
+                                                    <td className="font-bold text-gray-800">{c.name}</td><td dir="ltr" className="text-right text-gray-600">{c.phone}</td><td><span className="px-2 py-1 bg-gray-200 rounded text-xs">{c.segment}</span></td>
+                                                </tr>
+                                            ))}
+                                            {filteredCustomers.length === 0 && <tr><td colSpan="4" className="text-center p-8 text-gray-500 font-bold">لا توجد بيانات حالياً</td></tr>}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div className="flex flex-col sm:flex-row justify-between items-center pt-5 border-t mt-5 gap-4">
+                                    <p className="font-bold text-gray-700 text-lg">العدد المحدد للإرسال: <span className="text-brand text-2xl mx-1">{selectedCustomerIds.length}</span> عميل</p>
+                                    <div className="flex gap-3 w-full sm:w-auto">
+                                        <button onClick={() => setStep(1)} className="flex-1 sm:flex-none px-6 py-3 bg-gray-200 text-gray-800 rounded font-bold hover:bg-gray-300">تعديل الحملة</button>
+                                        <button onClick={handleSendSelected} className="flex-1 sm:flex-none px-8 py-3 bg-green-600 text-white rounded font-bold shadow-lg hover:bg-green-700 flex justify-center items-center gap-2"><Icons.Message/> إرسال وتفعيل</button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </Modal>
+                </div>
+            );
+        }
+
+        // 9. Reports (Fully upgraded with sections and print)
+        const Reports = ({ db, addToast }) => {
+            const [showExportPreview, setShowExportPreview] = useState(false);
+            const [exportFormat, setExportFormat] = useState('pdf');
+
+            // Dynamic Report Calculations
+            const allServices = db.workOrders.flatMap(wo => wo.detailedServices || []);
+            const oilChanges = allServices.filter(s => s.name === 'زيت المحرك');
+            
+            const oilTypesCount = {};
+            oilChanges.forEach(s => { const t = s.details; if(t) oilTypesCount[t] = (oilTypesCount[t]||0)+1; });
+            const topOil = Object.keys(oilTypesCount).length > 0 ? Object.keys(oilTypesCount).reduce((a, b) => oilTypesCount[a] > oilTypesCount[b] ? a : b) : 'لا يوجد';
+
+            const servicesCount = {};
+            allServices.forEach(s => { servicesCount[s.name] = (servicesCount[s.name]||0)+1; });
+            const topService = Object.keys(servicesCount).length > 0 ? Object.keys(servicesCount).reduce((a, b) => servicesCount[a] > servicesCount[b] ? a : b) : 'لا توجد بيانات';
+
+            const totalRev = db.workOrders.reduce((sum, wo) => sum + wo.total, 0);
+            const contactedCusts = [...db.feedback.map(f=>({name: f.customer, res: f.status, rating: f.rating, comment: f.comment}))];
+
+            const handleExportConfirm = () => {
+                setShowExportPreview(false);
+                if (exportFormat === 'excel') {
+                    const headers = ["القسم", "البيان", "القيمة"];
+                    const rows = [ 
+                        ["الخلاصة", "عدد السيارات الزائرة", db.workOrders.length],
+                        ["الخلاصة", "عدد مرات تغيير الزيت", oilChanges.length],
+                        ["الخلاصة", "أكثر زيت مبيعاً", topOil],
+                        ["الإيرادات", "المجموع الصافي", totalRev],
+                    ];
+                    exportToExcelCSV(`تقرير_اسبوعي_${new Date().toISOString().split('T')[0]}.csv`, headers, rows);
+                    addToast("تم تصدير ملف Excel بنجاح", "success");
+                } else {
+                    addToast("جاري إعداد التقرير للطباعة...", "success");
+                    window.print();
+                }
+            };
+
+            return (
+                <div className="space-y-6 max-w-5xl mx-auto">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                        <h2 className="text-2xl font-bold text-gray-800">التقارير الإدارية المتقدمة</h2>
+                        <div className="flex gap-2 w-full sm:w-auto">
+                            <button onClick={() => { setExportFormat('excel'); setShowExportPreview(true); }} className="flex-1 sm:flex-none border-2 border-green-600 text-green-700 bg-white px-4 py-2 rounded-lg font-bold hover:bg-green-50 flex items-center justify-center gap-2"><Icons.Download /> تصدير Excel</button>
+                            <button onClick={() => { setExportFormat('pdf'); setShowExportPreview(true); }} className="flex-1 sm:flex-none border-2 border-brand text-brand bg-white px-4 py-2 rounded-lg font-bold hover:bg-blue-50 flex items-center justify-center gap-2"><Icons.FileText /> طباعة التقرير / PDF</button>
+                        </div>
+                    </div>
+                    
+                    <div id="printable-area" className="bg-white p-8 rounded-xl shadow-sm border border-gray-200 space-y-8 print:shadow-none print:border-none print:p-0">
+                        <div className="text-center border-b-4 border-gray-800 pb-6">
+                            <h1 className="text-3xl font-black text-gray-900 tracking-wide">هندسة السيارات</h1>
+                            <p className="text-xl text-gray-800 font-bold mt-2">تقرير الإدارة الأسبوعي الشامل</p>
+                            <p className="text-sm text-gray-500 mt-1">تاريخ التقرير: {new Date().toLocaleDateString('ar-IQ')} | جميع البيانات مستخرجة آلياً</p>
+                        </div>
+
+                        {/* SECTION 1 */}
+                        <div className="space-y-4 print-break-inside-avoid">
+                            <h3 className="text-xl font-bold text-brand bg-blue-50 p-3 rounded-lg border border-blue-200 shadow-sm">1. الخلاصة العامة</h3>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                                <div className="p-4 border-2 border-gray-200 rounded-xl bg-gray-50 text-center"><span className="text-gray-500 block text-sm font-bold mb-1">السيارات الزائرة</span><span className="font-black text-2xl text-blue-600">{db.workOrders.length}</span></div>
+                                <div className="p-4 border-2 border-gray-200 rounded-xl bg-gray-50 text-center"><span className="text-gray-500 block text-sm font-bold mb-1">خدمات تبديل الزيت</span><span className="font-black text-2xl text-yellow-600">{oilChanges.length}</span></div>
+                                <div className="p-4 border-2 border-gray-200 rounded-xl bg-gray-50 text-center"><span className="text-gray-500 block text-sm font-bold mb-1">أكثر زيت مبيعاً</span><span className="font-black text-xl text-gray-800">{topOil}</span></div>
+                                <div className="p-4 border-2 border-gray-200 rounded-xl bg-gray-50 text-center"><span className="text-gray-500 block text-sm font-bold mb-1">أكثر خدمة طلباً</span><span className="font-black text-xl text-gray-800">{topService}</span></div>
+                            </div>
+                        </div>
+
+                        {/* SECTION 2 */}
+                        <div className="space-y-4 print-break-inside-avoid">
+                            <h3 className="text-xl font-bold text-brand bg-blue-50 p-3 rounded-lg border border-blue-200 shadow-sm">2. جدول العملاء المستفيدين (الأحدث)</h3>
+                            <table className="w-full text-right border-collapse border-2 border-gray-300 text-sm">
+                                <thead className="bg-gray-100"><tr><th className="p-2 border border-gray-300">اسم العميل</th><th className="p-2 border border-gray-300">السيارة</th><th className="p-2 border border-gray-300 text-center">الزيارات (تاريخي)</th><th className="p-2 border border-gray-300">مبلغ الفاتورة</th></tr></thead>
+                                <tbody>
+                                    {db.workOrders.slice(0,5).map(wo => {
+                                        const cust = db.customers.find(c=>c.name === wo.customerName);
+                                        return <tr key={wo.id}><td className="p-2 border border-gray-300 font-bold">{wo.customerName}</td><td className="p-2 border border-gray-300">{wo.vehicle}</td><td className="p-2 border border-gray-300 text-center font-bold">{cust?.visitsCount||1}</td><td className="p-2 border border-gray-300 font-bold text-green-600">{formatMoney(wo.total)}</td></tr>
+                                    })}
+                                    {db.workOrders.length === 0 && <tr><td colSpan="4" className="p-4 text-center font-bold text-gray-500">لا توجد بيانات حالياً</td></tr>}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        {/* SECTION 3 */}
+                        <div className="space-y-4 print-break-inside-avoid">
+                            <h3 className="text-xl font-bold text-brand bg-blue-50 p-3 rounded-lg border border-blue-200 shadow-sm">3. العملاء الذين تم التواصل معهم (آخر التقييمات)</h3>
+                            <table className="w-full text-right border-collapse border-2 border-gray-300 text-sm">
+                                <thead className="bg-gray-100"><tr><th className="p-2 border border-gray-300">الاسم</th><th className="p-2 border border-gray-300">الحالة / النتيجة</th><th className="p-2 border border-gray-300 text-center">التقييم</th><th className="p-2 border border-gray-300">رأي العميل</th></tr></thead>
+                                <tbody>
+                                    {contactedCusts.map((c,i) => <tr key={i}><td className="p-2 border border-gray-300 font-bold">{c.name}</td><td className="p-2 border border-gray-300">{c.res}</td><td className="p-2 border border-gray-300 text-center text-yellow-500 font-bold">{c.rating}★</td><td className="p-2 border border-gray-300">{c.comment||'-'}</td></tr>)}
+                                    {contactedCusts.length===0 && <tr><td colSpan="4" className="p-4 text-center font-bold text-gray-500">لا توجد بيانات حالياً</td></tr>}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        {/* SECTION 4 & 5 Layout */}
+                        <div className="flex flex-col sm:flex-row gap-8 print-break-inside-avoid">
+                            <div className="w-full sm:w-1/2 space-y-4">
+                                <h3 className="text-xl font-bold text-brand bg-blue-50 p-3 rounded-lg border border-blue-200 shadow-sm">4. الخدمات الأكثر مبيعاً</h3>
+                                <table className="w-full text-right border-collapse border-2 border-gray-300 text-sm">
+                                    <thead className="bg-gray-100"><tr><th className="p-2 border border-gray-300">اسم الخدمة</th><th className="p-2 border border-gray-300 text-center">عدد المرات</th></tr></thead>
+                                    <tbody>
+                                        {Object.keys(servicesCount).length > 0 ? Object.entries(servicesCount).sort((a,b)=>b[1]-a[1]).slice(0,4).map(([name, count], i) => <tr key={i}><td className="p-2 border border-gray-300 font-bold">{name}</td><td className="p-2 border border-gray-300 text-center font-bold">{count}</td></tr>) : <tr><td colSpan="2" className="p-4 text-center font-bold text-gray-500">لا توجد بيانات حالياً</td></tr>}
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div className="w-full sm:w-1/2 space-y-4">
+                                <h3 className="text-xl font-bold text-brand bg-blue-50 p-3 rounded-lg border border-blue-200 shadow-sm">5. ملخص الإيرادات</h3>
+                                <table className="w-full text-right border-collapse border-2 border-gray-300 text-sm">
+                                    <tbody>
+                                        <tr><th className="p-3 border border-gray-300 bg-gray-50">إجمالي الإيرادات</th><td className="p-3 border border-gray-300 font-bold">{formatMoney(totalRev)}</td></tr>
+                                        <tr><th className="p-3 border border-gray-300 bg-gray-50 text-red-600">الخصومات الممنوحة</th><td className="p-3 border border-gray-300 font-bold text-red-600">{formatMoney(0)}</td></tr>
+                                        <tr><th className="p-3 border border-gray-800 bg-gray-800 text-white text-lg">الصافي الكلي</th><td className="p-3 border border-gray-800 font-black text-xl bg-gray-100">{formatMoney(totalRev)}</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <Modal title="نافذة تأكيد تصدير التقرير الإداري" isOpen={showExportPreview} onClose={() => setShowExportPreview(false)} size="max-w-md">
+                        <div className="space-y-5">
+                            <div className="bg-gray-50 p-5 rounded-xl border border-gray-200 text-sm leading-relaxed text-gray-700">
+                                <h4 className="font-bold text-gray-900 mb-3 text-lg">معلومات الملف الجاهز للتصدير</h4>
+                                <p><strong>اسم التقرير:</strong> تقرير الأداء الشامل الموحد</p>
+                                <p><strong>تاريخ الإصدار:</strong> {new Date().toLocaleDateString('ar-IQ')}</p>
+                                <p><strong>الجداول والأقسام:</strong> الإيرادات، الزيارات، التوصيات الذكية</p>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold mb-3 text-gray-800">الصيغة المطلوبة:</label>
+                                <div className="flex gap-4">
+                                    <label className="flex-1 flex items-center justify-center gap-2 cursor-pointer border-2 p-3 rounded-lg hover:bg-green-50">
+                                        <input type="radio" name="reportFormat" value="excel" checked={exportFormat === 'excel'} onChange={() => setExportFormat('excel')} className="text-green-600" /> <span className="font-bold text-green-800">Excel (.csv)</span>
+                                    </label>
+                                    <label className="flex-1 flex items-center justify-center gap-2 cursor-pointer border-2 p-3 rounded-lg hover:bg-brand hover:bg-opacity-10">
+                                        <input type="radio" name="reportFormat" value="pdf" checked={exportFormat === 'pdf'} onChange={() => setExportFormat('pdf')} className="text-brand" /> <span className="font-bold text-brand">معاينة / طباعة PDF</span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div className="flex justify-end gap-3 pt-5 border-t mt-6">
+                                <button onClick={() => setShowExportPreview(false)} className="px-6 py-2.5 bg-gray-200 rounded font-bold">تراجع</button>
+                                <button onClick={handleExportConfirm} className="px-6 py-2.5 bg-brand text-white rounded font-bold shadow-md hover:bg-blue-700 flex items-center gap-2"><Icons.Download /> اعتماد واستخراج</button>
+                            </div>
+                        </div>
+                    </Modal>
+                </div>
+            );
+        };
+
+        // 10. Users
+        const Users = ({ db, updateDb, addToast }) => {
+            const [showModal, setShowModal] = useState(false);
+            const permissionsModules = ['لوحة التحكم','العملاء','ورقة العمل','الزيارات','المتابعات','التواصل','التقييمات','العروض','التقارير','المستخدمين','الإعدادات'];
+
+            const handleDelete = (id) => {
+                if(id === 1) return addToast("لا يمكن حذف مدير النظام الأساسي", "error");
+                if(window.confirm('هل أنت متأكد من الحذف؟')){
+                    updateDb('users', db.users.filter(u => u.id !== id));
+                    addToast('تم الحذف بنجاح', 'success');
+                }
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                        <h2 className="text-2xl font-bold text-gray-800">إدارة المستخدمين والصلاحيات</h2>
+                        <button onClick={() => setShowModal(true)} className="bg-brand text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 hover:bg-blue-700 shadow-md w-full sm:w-auto"><Icons.Plus /> مستخدم جديد</button>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                        <div className="bg-white p-5 rounded-xl border shadow-sm"><p className="text-sm text-gray-500 mb-1">المستخدمين</p><p className="text-2xl font-bold">{db.users.length}</p></div>
+                        <div className="bg-white p-5 rounded-xl border shadow-sm"><p className="text-sm text-gray-500 mb-1">النشطون</p><p className="text-2xl font-bold text-green-600">{db.users.filter(u=>u.status==='نشط').length}</p></div>
+                        <div className="bg-white p-5 rounded-xl border shadow-sm"><p className="text-sm text-gray-500 mb-1">معطلة</p><p className="text-2xl font-bold text-red-600">{db.users.filter(u=>u.status==='معطل').length}</p></div>
+                    </div>
+
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden mb-8">
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm text-right crm-table">
+                                <thead><tr><th>الاسم الكامل</th><th>اسم الدخول</th><th>الدور الوظيفي</th><th>الهاتف</th><th>آخر دخول</th><th>الحالة</th><th>الإجراءات</th></tr></thead>
+                                <tbody>
+                                    {db.users.map(u => (
+                                        <tr key={u.id}>
+                                            <td className="font-bold text-gray-800">{u.name}</td><td dir="ltr" className="text-right text-gray-500">{u.username}</td>
+                                            <td><span className="px-2 py-1 bg-gray-100 border rounded text-xs font-bold text-gray-700">{u.role}</span></td>
+                                            <td dir="ltr" className="text-right font-medium">{u.phone}</td><td>{u.lastLogin}</td>
+                                            <td><span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${u.status === 'نشط' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{u.status}</span></td>
+                                            <td>
+                                                <div className="flex gap-3 text-xs font-bold">
+                                                    <button onClick={() => setShowModal(true)} className="text-brand hover:underline">تعديل</button>
+                                                    <button className={`${u.status === 'نشط' ? 'text-red-500' : 'text-green-600'} hover:underline`}>{u.status === 'نشط' ? 'تعطيل' : 'تفعيل'}</button>
+                                                    {u.id !== 1 && <button onClick={() => handleDelete(u.id)} className="text-red-600 hover:text-red-800 bg-red-50 px-2 py-1 rounded border border-red-200"><Icons.Trash /></button>}
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                    {db.users.length === 0 && <tr><td colSpan="7" className="text-center p-8 text-gray-500 font-bold">لا توجد بيانات حالياً</td></tr>}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <Modal title="إنشاء / تعديل حساب مستخدم" isOpen={showModal} onClose={() => setShowModal(false)}>
+                        <div className="space-y-5">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                                <div><label className="block text-sm font-bold mb-1 text-gray-700">الاسم الكامل *</label><input type="text" className="w-full border p-3 rounded bg-gray-50" placeholder="مثال: أحمد عبد الله" /></div>
+                                <div><label className="block text-sm font-bold mb-1 text-gray-700">اسم الدخول (Username) *</label><input type="text" className="w-full border p-3 rounded bg-gray-50" dir="ltr" placeholder="ahmed.a" /></div>
+                                <div><label className="block text-sm font-bold mb-1 text-gray-700">كلمة المرور *</label><input type="password" className="w-full border p-3 rounded bg-gray-50" placeholder="********" /></div>
+                                <div><label className="block text-sm font-bold mb-1 text-gray-700">الدور والصلاحية *</label><select className="w-full border p-3 rounded bg-gray-50"><option>موظف الاستقبال</option><option>مدير النظام</option><option>موظف CRM</option><option>مشرف الصيانة</option><option>المحاسب</option></select></div>
+                            </div>
+                            <div className="flex justify-end gap-3 pt-5 border-t mt-5">
+                                <button onClick={() => setShowModal(false)} className="px-6 py-2.5 bg-gray-200 text-gray-800 rounded font-bold hover:bg-gray-300">تجاهل</button>
+                                <button onClick={() => {setShowModal(false); addToast("تم حفظ بيانات المستخدم بنجاح! يمكنه تسجيل الدخول الآن.", "success");}} className="px-6 py-2.5 bg-brand text-white rounded font-bold shadow-md hover:bg-blue-700 flex items-center gap-2"><Icons.Check /> حفظ الحساب</button>
+                            </div>
+                        </div>
+                    </Modal>
+                </div>
+            );
+        }
+        
+        // 11. Settings & Templates
+        const Settings = ({ db, updateDb, addToast }) => {
+            const [showTmplModal, setShowTmplModal] = useState(false);
+            const [editTmpl, setEditTmpl] = useState({ title: '', text: '', useGreeting: true });
+            
+            const handleSaveTemplate = () => {
+                if(!editTmpl.title || !editTmpl.text) return addToast("أكمل الحقول", "error");
+                updateDb('templates', [...db.templates, {id: Date.now(), ...editTmpl}]);
+                setShowTmplModal(false);
+                addToast("تم إضافة القالب بنجاح", "success");
+                setEditTmpl({ title: '', text: '', useGreeting: true });
+            };
+
+            const handleDeleteTemplate = (id) => {
+                if(window.confirm("هل تريد حذف هذا القالب؟")) {
+                    updateDb('templates', db.templates.filter(t=>t.id !== id));
+                    addToast("تم حذف القالب", "success");
+                }
+            };
+
+            return (
+                <div className="space-y-6 max-w-5xl pb-10 mx-auto lg:mx-0">
+                    <h2 className="text-2xl font-bold text-gray-800 border-b pb-2">إعدادات النظام العامة</h2>
+                    
+                    <form onSubmit={(e) => {e.preventDefault(); addToast("ممتاز! تم حفظ كافة الإعدادات بنجاح.", "success");}} className="space-y-8">
+                        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 space-y-5">
+                            <h3 className="font-bold text-brand text-lg">معلومات الورشة الأساسية (تظهر في الفواتير)</h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                                <div><label className="block text-sm font-bold mb-1 text-gray-700">اسم الورشة التجاري *</label><input type="text" required className="w-full border p-3 rounded bg-gray-50 focus:bg-white" defaultValue="هندسة السيارات" /></div>
+                                <div><label className="block text-sm font-bold mb-1 text-gray-700">العملة الافتراضية (مقفلة)</label><input type="text" className="w-full border p-3 rounded bg-gray-200 text-gray-500 font-bold" defaultValue="دينار عراقي (د.ع)" disabled /></div>
+                                <div><label className="block text-sm font-bold mb-1 text-gray-700">هاتف الورشة (للرسائل والواتساب) *</label><input type="text" required className="w-full border p-3 rounded bg-gray-50 focus:bg-white" defaultValue="07900000000" dir="ltr" /></div>
+                                <div><label className="block text-sm font-bold mb-1 text-gray-700">رابط شعار الورشة (Logo)</label><input type="text" className="w-full border p-3 rounded bg-gray-50 focus:bg-white" placeholder="https://..." dir="ltr" /></div>
+                            </div>
+                            <div className="flex justify-end pt-2"><button type="submit" className="bg-brand text-white px-8 py-2.5 rounded-lg font-bold shadow-md hover:bg-blue-700">حفظ إعدادات الورشة</button></div>
+                        </div>
+                    </form>
+
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 space-y-5">
+                        <div className="flex justify-between items-center border-b pb-3">
+                            <h3 className="font-bold text-brand text-lg">إدارة قوالب الرسائل (WhatsApp & SMS)</h3>
+                            <button onClick={()=>setShowTmplModal(true)} className="bg-green-600 text-white px-4 py-2 rounded font-bold shadow-md hover:bg-green-700 text-sm flex gap-2 items-center"><Icons.Plus /> قالب جديد</button>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {db.templates.map(t => (
+                                <div key={t.id} className="border-2 border-gray-200 p-4 rounded-lg bg-gray-50 relative">
+                                    <h4 className="font-bold text-gray-800 mb-2">{t.title}</h4>
+                                    <p className="text-sm text-gray-600 mb-4 leading-relaxed whitespace-pre-wrap">{t.text}</p>
+                                    {t.useGreeting && <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-1 rounded-full font-bold">يحتوي على تحية آلية</span>}
+                                    <div className="absolute left-4 top-4 flex gap-2">
+                                        <button onClick={()=>handleDeleteTemplate(t.id)} className="text-red-500 hover:bg-red-100 p-1 rounded"><Icons.Trash /></button>
+                                    </div>
+                                </div>
+                            ))}
+                            {db.templates.length === 0 && <div className="col-span-2 text-center py-6 text-gray-500 font-bold">لا توجد قوالب حالياً</div>}
+                        </div>
+                    </div>
+
+                    <Modal title="إضافة قالب رسالة جديد" isOpen={showTmplModal} onClose={() => setShowTmplModal(false)}>
+                        <div className="space-y-4">
+                            <div><label className="block text-sm font-bold mb-1">اسم القالب (لتمييزه)</label><input type="text" className="w-full border p-3 rounded bg-gray-50" value={editTmpl.title} onChange={e=>setEditTmpl({...editTmpl, title: e.target.value})} placeholder="مثال: رسالة ترحيبية..." /></div>
+                            <div>
+                                <label className="block text-sm font-bold mb-2">المتغيرات المدعومة (تُستبدل آلياً):</label>
+                                <div className="text-xs text-gray-600 bg-blue-50 border border-blue-100 p-3 rounded mb-3 font-bold">
+                                    [اسم العميل] - [نوع السيارة] - [آخر زيارة]
+                                </div>
+                                <label className="block text-sm font-bold mb-1">نص الرسالة</label>
+                                <textarea className="w-full border p-3 rounded h-32 bg-gray-50" value={editTmpl.text} onChange={e=>setEditTmpl({...editTmpl, text: e.target.value})} placeholder="اكتب النص هنا..."></textarea>
+                            </div>
+                            <div>
+                                <label className="flex items-center gap-2 cursor-pointer text-sm font-bold bg-gray-50 p-3 border rounded">
+                                    <input type="checkbox" checked={editTmpl.useGreeting} onChange={e=>setEditTmpl({...editTmpl, useGreeting: e.target.checked})} className="text-brand w-5 h-5 rounded"/> 
+                                    إضافة تحية (مرحبا [اسم العميل]،) آلياً في البداية
+                                </label>
+                            </div>
+                            <div className="flex justify-end gap-3 pt-4 border-t"><button onClick={() => setShowTmplModal(false)} className="px-5 py-2 bg-gray-200 rounded font-bold">إلغاء</button><button onClick={handleSaveTemplate} className="px-5 py-2 bg-brand text-white rounded font-bold shadow-md hover:bg-blue-700">حفظ القالب</button></div>
+                        </div>
+                    </Modal>
+                </div>
+            );
+        };
+
+        // --- Main App Component (With Login) ---
+        const App = () => {
+            const [isAuthenticated, setIsAuthenticated] = useState(false);
+            const [currentUser, setCurrentUser] = useState(null);
+
+            const [activeTab, setActiveTab] = useState('dashboard');
+            const [selectedCustomer, setSelectedCustomer] = useState(null);
+            const [toast, setToast] = useState(null);
+            const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+            const [db, setDb] = useState(initialDB);
+
+            const handleLogin = (user) => { setCurrentUser(user); setIsAuthenticated(true); };
+            const handleLogout = () => { setIsAuthenticated(false); setCurrentUser(null); };
+
+            const showToast = (message, type) => setToast({ message, type, id: Date.now() });
+            const updateDb = (collection, newData) => setDb(prev => ({ ...prev, [collection]: newData }));
+            const handleViewProfile = (customer) => { setSelectedCustomer(customer); setActiveTab('customers'); };
+
+            if (!isAuthenticated) return <LoginScreen onLogin={handleLogin} />;
+
+            const tabs = [
+                { id: 'dashboard', name: 'لوحة التحكم', icon: <Icons.Dashboard /> },
+                { id: 'customers', name: 'إدارة العملاء', icon: <Icons.Users /> },
+                { id: 'workorder', name: 'إدخال ورقة عمل (فاتورة)', icon: <Icons.Wrench /> },
+                { id: 'history', name: 'سجل الزيارات والخدمات', icon: <Icons.History /> },
+                { id: 'followups', name: 'إدارة المتابعات', icon: <Icons.Clock /> },
+                { id: 'communication', name: 'أتمتة مهام التواصل', icon: <Icons.Message /> },
+                { id: 'feedback', name: 'التقييمات والفيدباك', icon: <Icons.Star /> },
+                { id: 'offers', name: 'العروض التسويقية', icon: <Icons.Gift /> },
+                { id: 'reports', name: 'تقارير الإدارة', icon: <Icons.Report /> },
+                { id: 'users', name: 'المستخدمون والصلاحيات', icon: <Icons.Users /> },
+                { id: 'settings', name: 'إعدادات النظام', icon: <Icons.Settings /> },
+            ];
+
+            const renderContent = () => {
+                if (activeTab === 'customers' && selectedCustomer) return <CustomerProfile customer={selectedCustomer} onBack={() => setSelectedCustomer(null)} db={db} addToast={showToast} />;
+                switch(activeTab) {
+                    case 'dashboard': return <Dashboard db={db} />;
+                    case 'customers': return <Customers db={db} updateDb={updateDb} onViewProfile={handleViewProfile} addToast={showToast} />;
+                    case 'workorder': return <WorkOrder db={db} updateDb={updateDb} addToast={showToast} />;
+                    case 'history': return <History db={db} updateDb={updateDb} onViewProfile={handleViewProfile} addToast={showToast} />;
+                    case 'followups': return <FollowUps db={db} updateDb={updateDb} onViewProfile={handleViewProfile} addToast={showToast} />;
+                    case 'communication': return <Communication db={db} updateDb={updateDb} addToast={showToast} />;
+                    case 'feedback': return <Feedback db={db} updateDb={updateDb} addToast={showToast} />;
+                    case 'offers': return <Offers db={db} updateDb={updateDb} addToast={showToast} />;
+                    case 'reports': return <Reports db={db} addToast={showToast} />;
+                    case 'users': return <Users db={db} updateDb={updateDb} addToast={showToast} />;
+                    case 'settings': return <Settings db={db} updateDb={updateDb} addToast={showToast} />;
+                    default: return <Dashboard db={db} />;
+                }
+            };
+
+            return (
+                <div className="flex h-screen overflow-hidden bg-[#f8fafc]">
+                    {toast && <Toast key={toast.id} message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+                    
+                    {isSidebarOpen && <div className="fixed inset-0 bg-black bg-opacity-50 z-40 lg:hidden print-hide" onClick={() => setIsSidebarOpen(false)}></div>}
+
+                    <aside className={`fixed inset-y-0 right-0 z-50 transform transition-transform duration-300 ease-in-out lg:relative lg:translate-x-0 w-72 bg-navy-900 text-white flex flex-col shadow-2xl flex-shrink-0 print-hide ${isSidebarOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+                        <div className="p-6 border-b border-navy-800 text-center flex justify-between items-center lg:block">
+                            <div>
+                                <h1 className="text-2xl font-black tracking-wider text-white">هندسة السيارات</h1>
+                                <p className="text-blue-400 text-xs mt-1 font-medium tracking-widest uppercase">CRM System</p>
+                            </div>
+                            <button onClick={()=>setIsSidebarOpen(false)} className="lg:hidden text-gray-400 hover:text-white"><Icons.X /></button>
+                        </div>
+                        <nav className="flex-1 overflow-y-auto sidebar-scroll py-4 px-3 space-y-1.5">
+                            {tabs.map(tab => (
+                                <button key={tab.id} onClick={() => { setActiveTab(tab.id); setSelectedCustomer(null); setIsSidebarOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 text-sm font-bold border border-transparent ${activeTab === tab.id ? 'bg-brand text-white shadow-lg border-blue-400/30' : 'text-gray-300 hover:bg-navy-800 hover:text-white'}`}>
+                                    {tab.icon}{tab.name}
+                                    {tab.id === 'communication' && db.communicationQueue.filter(q=>q.status==='قيد الانتظار').length > 0 && <span className="mr-auto bg-red-500 text-white px-2 py-0.5 rounded-full text-xs shadow-sm">{db.communicationQueue.filter(q=>q.status==='قيد الانتظار').length}</span>}
+                                </button>
+                            ))}
+                        </nav>
+                        <div className="p-4 border-t border-navy-800 flex justify-between items-center">
+                            <span className="text-xs text-gray-400 font-bold">{currentUser?.username} ({currentUser?.role})</span>
+                            <button onClick={handleLogout} className="text-red-400 hover:text-red-300" title="تسجيل الخروج"><Icons.LogOut /></button>
+                        </div>
+                    </aside>
+                    
+                    <main className="flex-1 flex flex-col h-screen overflow-hidden relative min-w-0 w-full">
+                        <header className="bg-white h-16 border-b border-gray-200 flex items-center justify-between px-4 lg:px-8 flex-shrink-0 z-10 shadow-sm print-hide">
+                            <div className="flex items-center gap-3">
+                                <button onClick={()=>setIsSidebarOpen(true)} className="lg:hidden text-gray-700 hover:text-brand"><Icons.Menu /></button>
+                                <div className="text-lg font-bold text-gray-800 truncate max-w-[200px] sm:max-w-md">
+                                    {tabs.find(t => t.id === activeTab)?.name} 
+                                    {activeTab === 'customers' && selectedCustomer && <span className="text-gray-400 font-normal truncate hidden sm:inline"> / ملف {selectedCustomer.name}</span>}
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-4">
+                                <div className="text-sm font-bold text-gray-500 bg-gray-50 px-4 py-1.5 rounded-full border border-gray-200 hidden sm:block shadow-inner">{new Date().toLocaleDateString('ar-IQ')}</div>
+                                <div className="w-10 h-10 bg-gradient-to-tr from-brand to-blue-400 text-white rounded-full flex items-center justify-center font-black shadow-md border-2 border-white">{currentUser?.username.charAt(0).toUpperCase()}</div>
+                            </div>
+                        </header>
+                        <div className="flex-1 overflow-y-auto main-scroll p-4 sm:p-8 bg-[#f8fafc] print:p-0 print:bg-white print:overflow-visible">
+                            {renderContent()}
+                        </div>
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
