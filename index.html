@@ -37,6 +37,9 @@
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     
+    <!-- Supabase JS (Cloud Database) -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
     <!-- Babel -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
@@ -97,20 +100,18 @@
             return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`;
         };
         const exportToExcelCSV = (filename, headers, rows) => {
-            let csvContent = "\uFEFF" + headers.join(",") + "\n";
-            rows.forEach(row => {
-                let csvRow = row.map(val => {
-                    let str = String(val !== undefined && val !== null ? val : '');
-                    if (str.includes(',') || str.includes('\n') || str.includes('"')) return `"${str.replace(/"/g, '""')}"`;
-                    return str;
-                });
-                csvContent += csvRow.join(",") + "\n";
-            });
-            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            // Excel-compatible HTML export. Works from GitHub Pages without a backend.
+            const safe = (v) => String(v !== undefined && v !== null ? v : '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const table = `
+                <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+                <head><meta charset="UTF-8"><style>table{direction:rtl;border-collapse:collapse;font-family:Arial}td,th{border:1px solid #999;padding:8px;text-align:right}th{background:#f1f5f9}</style></head>
+                <body><table><thead><tr>${headers.map(h=>`<th>${safe(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${safe(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></body></html>`;
+            const blob = new Blob([table], { type: 'application/vnd.ms-excel;charset=utf-8;' });
             const link = document.createElement("a");
             link.href = URL.createObjectURL(blob);
-            link.download = filename;
+            link.download = filename.endsWith('.xls') || filename.endsWith('.xlsx') ? filename.replace('.xlsx','.xls') : `${filename}.xls`;
             link.click();
+            setTimeout(() => URL.revokeObjectURL(link.href), 1000);
         };
 
         // --- Gemini API Function ---
@@ -249,6 +250,21 @@
             ],
             templates: []
         };
+
+        // --- Cloud Sync Layer (Supabase) ---
+        const LOCAL_DB_KEY = 'automotive_crm_local_db_v2';
+        const SUPABASE_CONFIG_KEY = 'automotive_crm_supabase_config_v1';
+        let cloudSaveTimer = null;
+        const safeJsonParse = (text, fallback) => { try { return JSON.parse(text); } catch(e) { return fallback; } };
+        const getStoredDb = () => { const stored = localStorage.getItem(LOCAL_DB_KEY); const parsed = stored ? safeJsonParse(stored, initialDB) : initialDB; return { ...initialDB, ...parsed }; };
+        const saveLocalDb = (data) => localStorage.setItem(LOCAL_DB_KEY, JSON.stringify(data));
+        const getSupabaseConfig = () => { const cfg = safeJsonParse(localStorage.getItem(SUPABASE_CONFIG_KEY) || '{}', {}); return { url: cfg.url || '', key: cfg.key || '' }; };
+        const saveSupabaseConfig = (url, key) => { localStorage.setItem(SUPABASE_CONFIG_KEY, JSON.stringify({ url: (url||'').trim(), key: (key||'').trim() })); };
+        const getSupabaseClient = () => { const cfg = getSupabaseConfig(); if (!cfg.url || !cfg.key || !window.supabase) return null; return window.supabase.createClient(cfg.url, cfg.key); };
+        const cloudLoadDb = async () => { const client = getSupabaseClient(); if (!client) return null; const { data, error } = await client.from('crm_app_state').select('data').eq('id', 1).maybeSingle(); if (error) throw error; return data?.data ? { ...initialDB, ...data.data } : null; };
+        const cloudSaveDb = async (db) => { const client = getSupabaseClient(); if (!client) return false; const cleanData = JSON.parse(JSON.stringify({ ...initialDB, ...db })); const { error } = await client.from('crm_app_state').upsert({ id: 1, data: cleanData, updated_at: new Date().toISOString() }); if (error) throw error; return true; };
+        const queueCloudSave = (db, setSyncStatus) => { saveLocalDb(db); if (!getSupabaseConfig().url || !getSupabaseConfig().key) { setSyncStatus && setSyncStatus('حفظ محلي فقط'); return; } clearTimeout(cloudSaveTimer); setSyncStatus && setSyncStatus('جاري المزامنة...'); cloudSaveTimer = setTimeout(async () => { try { await cloudSaveDb(db); setSyncStatus && setSyncStatus('متصل ومزامن'); } catch (err) { console.error('Supabase save error:', err); setSyncStatus && setSyncStatus('فشل المزامنة - تحقق من Supabase'); } }, 600); };
+        const subscribeToCloud = (onChange, setSyncStatus) => { const client = getSupabaseClient(); if (!client) return null; const channel = client.channel('crm_app_state_changes').on('postgres_changes', { event: '*', schema: 'public', table: 'crm_app_state', filter: 'id=eq.1' }, (payload) => { if (payload.new?.data) { const next = { ...initialDB, ...payload.new.data }; saveLocalDb(next); onChange(next); setSyncStatus && setSyncStatus('تم تحديث البيانات من السحابة'); } }).subscribe(); return channel; };
 
         // --- Components ---
 
@@ -1734,9 +1750,15 @@
         }
         
         // 11. Settings & Templates
-        const Settings = ({ db, updateDb, addToast }) => {
+        const Settings = ({ db, updateDb, addToast, syncStatus }) => {
             const [showTmplModal, setShowTmplModal] = useState(false);
             const [editTmpl, setEditTmpl] = useState({ title: '', text: '', useGreeting: true });
+            const [cloudCfg, setCloudCfg] = useState(getSupabaseConfig());
+            const handleSaveCloudConfig = async () => {
+                saveSupabaseConfig(cloudCfg.url, cloudCfg.key);
+                addToast('تم حفظ إعدادات Supabase. سيتم إعادة تحميل النظام لتفعيل الاتصال.', 'success');
+                setTimeout(() => window.location.reload(), 900);
+            };
             
             const handleSaveTemplate = () => {
                 if(!editTmpl.title || !editTmpl.text) return addToast("أكمل الحقول", "error");
@@ -1769,6 +1791,22 @@
                             <div className="flex justify-end pt-2"><button type="submit" className="bg-brand text-white px-8 py-2.5 rounded-lg font-bold shadow-md hover:bg-blue-700">حفظ إعدادات الورشة</button></div>
                         </div>
                     </form>
+
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 space-y-5">
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b pb-3">
+                            <div>
+                                <h3 className="font-bold text-brand text-lg">ربط قاعدة البيانات السحابية Supabase</h3>
+                                <p className="text-sm text-gray-500 mt-1">بعد إدخال الرابط والمفتاح، ستتزامن البيانات بين الموبايل والحاسبة.</p>
+                            </div>
+                            <span className={`px-3 py-1 rounded-full text-xs font-black border ${syncStatus && syncStatus.includes('متصل') ? 'bg-green-50 text-green-700 border-green-200' : syncStatus && syncStatus.includes('فشل') ? 'bg-red-50 text-red-700 border-red-200' : 'bg-gray-50 text-gray-600 border-gray-200'}`}>{syncStatus || 'حفظ محلي فقط'}</span>
+                        </div>
+                        <div className="grid grid-cols-1 gap-4">
+                            <div><label className="block text-sm font-bold mb-1 text-gray-700">Project URL</label><input type="text" dir="ltr" className="w-full border p-3 rounded bg-gray-50 focus:bg-white" value={cloudCfg.url} onChange={e=>setCloudCfg({...cloudCfg, url:e.target.value})} placeholder="https://xxxx.supabase.co" /></div>
+                            <div><label className="block text-sm font-bold mb-1 text-gray-700">Anon / Publishable Key</label><input type="password" dir="ltr" className="w-full border p-3 rounded bg-gray-50 focus:bg-white" value={cloudCfg.key} onChange={e=>setCloudCfg({...cloudCfg, key:e.target.value})} placeholder="eyJhbGciOi..." /></div>
+                        </div>
+                        <div className="bg-blue-50 border border-blue-100 p-4 rounded-lg text-sm text-blue-800 leading-relaxed"><b>مهم:</b> قبل الحفظ، أنشئ جدول <span dir="ltr" className="font-mono bg-white px-1 rounded">crm_app_state</span> في Supabase باستخدام ملف SQL المرفق مع النسخة المعدلة. لا تستخدم مفتاح <span dir="ltr" className="font-mono bg-white px-1 rounded">service_role</span> هنا.</div>
+                        <div className="flex justify-end"><button type="button" onClick={handleSaveCloudConfig} className="bg-navy-900 text-white px-8 py-2.5 rounded-lg font-bold shadow-md hover:bg-navy-800">حفظ وتفعيل المزامنة</button></div>
+                    </div>
 
                     <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 space-y-5">
                         <div className="flex justify-between items-center border-b pb-3">
@@ -1823,13 +1861,31 @@
             const [selectedCustomer, setSelectedCustomer] = useState(null);
             const [toast, setToast] = useState(null);
             const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-            const [db, setDb] = useState(initialDB);
+            const [db, setDb] = useState(() => getStoredDb());
+            const [syncStatus, setSyncStatus] = useState(getSupabaseConfig().url ? 'جاري الاتصال...' : 'حفظ محلي فقط');
+
+            useEffect(() => {
+                let channel = null; let active = true;
+                const initCloud = async () => {
+                    try {
+                        const cfg = getSupabaseConfig();
+                        if (!cfg.url || !cfg.key) { setSyncStatus('حفظ محلي فقط'); return; }
+                        setSyncStatus('جاري الاتصال بقاعدة البيانات...');
+                        const cloudDb = await cloudLoadDb();
+                        if (cloudDb && active) { setDb(cloudDb); saveLocalDb(cloudDb); setSyncStatus('متصل ومزامن'); }
+                        else { await cloudSaveDb(getStoredDb()); setSyncStatus('تم إنشاء نسخة سحابية أولية'); }
+                        channel = subscribeToCloud((nextDb) => { if(active) setDb(nextDb); }, setSyncStatus);
+                    } catch (err) { console.error(err); setSyncStatus('فشل الاتصال - يعمل محلياً'); }
+                };
+                initCloud();
+                return () => { active = false; try { if(channel) getSupabaseClient()?.removeChannel(channel); } catch(e) {} };
+            }, []);
 
             const handleLogin = (user) => { setCurrentUser(user); setIsAuthenticated(true); };
             const handleLogout = () => { setIsAuthenticated(false); setCurrentUser(null); };
 
             const showToast = (message, type) => setToast({ message, type, id: Date.now() });
-            const updateDb = (collection, newData) => setDb(prev => ({ ...prev, [collection]: newData }));
+            const updateDb = (collection, newData) => setDb(prev => { const next = { ...prev, [collection]: newData }; queueCloudSave(next, setSyncStatus); return next; });
             const handleViewProfile = (customer) => { setSelectedCustomer(customer); setActiveTab('customers'); };
 
             if (!isAuthenticated) return <LoginScreen onLogin={handleLogin} />;
@@ -1861,7 +1917,7 @@
                     case 'offers': return <Offers db={db} updateDb={updateDb} addToast={showToast} />;
                     case 'reports': return <Reports db={db} addToast={showToast} />;
                     case 'users': return <Users db={db} updateDb={updateDb} addToast={showToast} />;
-                    case 'settings': return <Settings db={db} updateDb={updateDb} addToast={showToast} />;
+                    case 'settings': return <Settings db={db} updateDb={updateDb} addToast={showToast} syncStatus={syncStatus} />;
                     default: return <Dashboard db={db} />;
                 }
             };
@@ -1904,6 +1960,7 @@
                                 </div>
                             </div>
                             <div className="flex items-center gap-4">
+                                <div className="text-[11px] font-black text-gray-500 bg-gray-50 px-3 py-1.5 rounded-full border border-gray-200 hidden md:block shadow-inner">{syncStatus}</div>
                                 <div className="text-sm font-bold text-gray-500 bg-gray-50 px-4 py-1.5 rounded-full border border-gray-200 hidden sm:block shadow-inner">{new Date().toLocaleDateString('ar-IQ')}</div>
                                 <div className="w-10 h-10 bg-gradient-to-tr from-brand to-blue-400 text-white rounded-full flex items-center justify-center font-black shadow-md border-2 border-white">{currentUser?.username.charAt(0).toUpperCase()}</div>
                             </div>
