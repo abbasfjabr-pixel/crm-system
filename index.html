@@ -196,18 +196,18 @@
         };
 
         // --- Login Screen ---
-        const LoginScreen = ({ onLogin, users = [] }) => {
+        const LoginScreen = ({ onLogin }) => {
             const [username, setUsername] = useState('');
             const [password, setPassword] = useState('');
             const [error, setError] = useState('');
 
             const handleSubmit = (e) => {
                 e.preventDefault();
-                if(!username || !password) return setError("الرجاء إدخال اسم المستخدم وكلمة المرور");
-                const found = (users || []).find(u => u.username === username && (u.password === password || (!u.password && username === "admin")));
-                if(!found) return setError("اسم المستخدم أو كلمة المرور غير صحيحة");
-                if(found.status === "معطل") return setError("هذا الحساب معطل، راجع مدير النظام");
-                onLogin({ username: found.username, name: found.name, role: found.role });
+                if(username && password) {
+                    onLogin({ username, role: username === 'admin' ? 'مدير' : 'موظف' });
+                } else {
+                    setError('الرجاء إدخال اسم المستخدم وكلمة المرور');
+                }
             };
 
             return (
@@ -254,17 +254,75 @@
         // --- Cloud Sync Layer (Supabase) ---
         const LOCAL_DB_KEY = 'automotive_crm_local_db_v2';
         const SUPABASE_CONFIG_KEY = 'automotive_crm_supabase_config_v1';
+
+        // الربط مدمج داخل الكود حتى لا تحتاج إدخال URL/KEY من الإعدادات.
+        // هذا هو مشروع Supabase الذي أرسلته.
+        const DEFAULT_SUPABASE_URL = 'https://nqzclxcffehevrslaxeu.supabase.co';
+        const DEFAULT_SUPABASE_KEY = 'sb_publishable_1KvxZx9shxQHxRzJaLnSXg_FjTt3Rtp';
+
         let cloudSaveTimer = null;
         const safeJsonParse = (text, fallback) => { try { return JSON.parse(text); } catch(e) { return fallback; } };
         const getStoredDb = () => { const stored = localStorage.getItem(LOCAL_DB_KEY); const parsed = stored ? safeJsonParse(stored, initialDB) : initialDB; return { ...initialDB, ...parsed }; };
         const saveLocalDb = (data) => localStorage.setItem(LOCAL_DB_KEY, JSON.stringify(data));
-        const getSupabaseConfig = () => { const cfg = safeJsonParse(localStorage.getItem(SUPABASE_CONFIG_KEY) || '{}', {}); return { url: cfg.url || '', key: cfg.key || '' }; };
-        const saveSupabaseConfig = (url, key) => { localStorage.setItem(SUPABASE_CONFIG_KEY, JSON.stringify({ url: (url||'').trim(), key: (key||'').trim() })); };
-        const getSupabaseClient = () => { const cfg = getSupabaseConfig(); if (!cfg.url || !cfg.key || !window.supabase) return null; return window.supabase.createClient(cfg.url, cfg.key); };
-        const cloudLoadDb = async () => { const client = getSupabaseClient(); if (!client) return null; const { data, error } = await client.from('crm_app_state').select('data').eq('id', 1).maybeSingle(); if (error) throw error; return data?.data ? { ...initialDB, ...data.data } : null; };
-        const cloudSaveDb = async (db) => { const client = getSupabaseClient(); if (!client) return false; const cleanData = JSON.parse(JSON.stringify({ ...initialDB, ...db })); const { error } = await client.from('crm_app_state').upsert({ id: 1, data: cleanData, updated_at: new Date().toISOString() }); if (error) throw error; return true; };
-        const queueCloudSave = (db, setSyncStatus) => { saveLocalDb(db); if (!getSupabaseConfig().url || !getSupabaseConfig().key) { setSyncStatus && setSyncStatus('حفظ محلي فقط'); return; } clearTimeout(cloudSaveTimer); setSyncStatus && setSyncStatus('جاري المزامنة...'); cloudSaveTimer = setTimeout(async () => { try { await cloudSaveDb(db); setSyncStatus && setSyncStatus('متصل ومزامن'); } catch (err) { console.error('Supabase save error:', err); setSyncStatus && setSyncStatus('فشل المزامنة - تحقق من Supabase'); } }, 600); };
-        const subscribeToCloud = (onChange, setSyncStatus) => { const client = getSupabaseClient(); if (!client) return null; const channel = client.channel('crm_app_state_changes').on('postgres_changes', { event: '*', schema: 'public', table: 'crm_app_state', filter: 'id=eq.1' }, (payload) => { if (payload.new?.data) { const next = { ...initialDB, ...payload.new.data }; saveLocalDb(next); onChange(next); setSyncStatus && setSyncStatus('تم تحديث البيانات من السحابة'); } }).subscribe(); return channel; };
+
+        // دائماً استخدم الربط المدمج؛ هذا يمنع بقاء URL قديم أو خاطئ محفوظ في المتصفح.
+        const getSupabaseConfig = () => ({ url: DEFAULT_SUPABASE_URL, key: DEFAULT_SUPABASE_KEY });
+        const saveSupabaseConfig = (url, key) => { localStorage.setItem(SUPABASE_CONFIG_KEY, JSON.stringify({ url: DEFAULT_SUPABASE_URL, key: DEFAULT_SUPABASE_KEY })); };
+
+        const getSupabaseClient = () => {
+            const cfg = getSupabaseConfig();
+            if (!cfg.url || !cfg.key || !window.supabase) return null;
+            return window.supabase.createClient(cfg.url, cfg.key);
+        };
+
+        const cloudLoadDb = async () => {
+            const client = getSupabaseClient();
+            if (!client) return null;
+            const { data, error } = await client.from('crm_app_state').select('data').eq('id', 1).maybeSingle();
+            if (error) throw error;
+            return data?.data ? { ...initialDB, ...data.data } : null;
+        };
+
+        const cloudSaveDb = async (db) => {
+            const client = getSupabaseClient();
+            if (!client) return false;
+            const cleanData = JSON.parse(JSON.stringify({ ...initialDB, ...db }));
+            const { error } = await client
+                .from('crm_app_state')
+                .upsert({ id: 1, data: cleanData, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+            if (error) throw error;
+            return true;
+        };
+
+        const queueCloudSave = (db, setSyncStatus) => {
+            saveLocalDb(db);
+            if (!getSupabaseConfig().url || !getSupabaseConfig().key) { setSyncStatus && setSyncStatus('حفظ محلي فقط'); return; }
+            clearTimeout(cloudSaveTimer);
+            setSyncStatus && setSyncStatus('جاري المزامنة...');
+            cloudSaveTimer = setTimeout(async () => {
+                try { await cloudSaveDb(db); setSyncStatus && setSyncStatus('متصل ومزامن'); }
+                catch (err) {
+                    console.error('Supabase save error:', err);
+                    setSyncStatus && setSyncStatus('فشل المزامنة: ' + (err?.message || 'تحقق من Supabase'));
+                }
+            }, 500);
+        };
+
+        const subscribeToCloud = (onChange, setSyncStatus) => {
+            const client = getSupabaseClient();
+            if (!client) return null;
+            const channel = client.channel('crm_app_state_changes')
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_app_state', filter: 'id=eq.1' }, (payload) => {
+                    if (payload.new?.data) {
+                        const next = { ...initialDB, ...payload.new.data };
+                        saveLocalDb(next);
+                        onChange(next);
+                        setSyncStatus && setSyncStatus('تم تحديث البيانات من السحابة');
+                    }
+                })
+                .subscribe();
+            return channel;
+        };
 
         // --- Components ---
 
@@ -1681,83 +1739,55 @@
 
         // 10. Users
         const Users = ({ db, updateDb, addToast }) => {
-            const emptyUserForm = { name: '', username: '', password: '', role: 'موظف الاستقبال', phone: '', email: '', status: 'نشط' };
             const [showModal, setShowModal] = useState(false);
-            const [editingUserId, setEditingUserId] = useState(null);
-            const [userForm, setUserForm] = useState(emptyUserForm);
+            const [userForm, setUserForm] = useState({
+                name: '',
+                username: '',
+                password: '',
+                role: 'موظف الاستقبال',
+                phone: '',
+                email: '',
+                status: 'نشط'
+            });
             const permissionsModules = ['لوحة التحكم','العملاء','ورقة العمل','الزيارات','المتابعات','التواصل','التقييمات','العروض','التقارير','المستخدمين','الإعدادات'];
 
-            const openAddUser = () => {
-                setEditingUserId(null);
-                setUserForm(emptyUserForm);
-                setShowModal(true);
-            };
+            const resetUserForm = () => setUserForm({
+                name: '',
+                username: '',
+                password: '',
+                role: 'موظف الاستقبال',
+                phone: '',
+                email: '',
+                status: 'نشط'
+            });
 
-            const openEditUser = (user) => {
-                setEditingUserId(user.id);
-                setUserForm({
-                    name: user.name || '',
-                    username: user.username || '',
-                    password: user.password || '',
-                    role: user.role || 'موظف الاستقبال',
-                    phone: user.phone || '',
-                    email: user.email || '',
-                    status: user.status || 'نشط'
-                });
-                setShowModal(true);
-            };
-
-            const handleSaveUser = () => {
-                if(!userForm.name.trim() || !userForm.username.trim()) return addToast('الرجاء إدخال الاسم الكامل واسم الدخول', 'error');
-                if(!editingUserId && !userForm.password.trim()) return addToast('الرجاء إدخال كلمة المرور للمستخدم الجديد', 'error');
-
-                const duplicateUsername = db.users.some(u => u.username === userForm.username.trim() && u.id !== editingUserId);
-                if(duplicateUsername) return addToast('اسم الدخول موجود مسبقاً، اختر اسم آخر', 'error');
-
-                let nextUsers;
-                if(editingUserId) {
-                    nextUsers = db.users.map(u => u.id === editingUserId ? {
-                        ...u,
-                        name: userForm.name.trim(),
-                        username: userForm.username.trim(),
-                        password: userForm.password || u.password || '',
-                        role: userForm.role,
-                        phone: userForm.phone.trim(),
-                        email: userForm.email.trim(),
-                        status: userForm.status
-                    } : u);
-                    addToast('تم تعديل بيانات المستخدم بنجاح', 'success');
-                } else {
-                    const newUser = {
-                        id: Date.now(),
-                        name: userForm.name.trim(),
-                        username: userForm.username.trim(),
-                        password: userForm.password.trim(),
-                        role: userForm.role,
-                        phone: userForm.phone.trim(),
-                        email: userForm.email.trim(),
-                        status: userForm.status,
-                        lastLogin: '-'
-                    };
-                    nextUsers = [newUser, ...db.users];
-                    addToast('تم إضافة المستخدم فعلياً بنجاح', 'success');
+            const handleAddUser = () => {
+                if(!userForm.name.trim() || !userForm.username.trim() || !userForm.password.trim()) {
+                    return addToast('الرجاء إدخال الاسم واسم الدخول وكلمة المرور', 'error');
                 }
+                const usernameExists = db.users.some(u => String(u.username).trim().toLowerCase() === userForm.username.trim().toLowerCase());
+                if(usernameExists) return addToast('اسم الدخول موجود مسبقاً، اختر اسم آخر', 'error');
 
-                updateDb('users', nextUsers);
+                const newUser = {
+                    id: Date.now(),
+                    name: userForm.name.trim(),
+                    username: userForm.username.trim(),
+                    password: userForm.password,
+                    role: userForm.role,
+                    phone: userForm.phone.trim(),
+                    email: userForm.email.trim(),
+                    status: userForm.status,
+                    lastLogin: '-'
+                };
+
+                updateDb('users', [newUser, ...db.users]);
                 setShowModal(false);
-                setEditingUserId(null);
-                setUserForm(emptyUserForm);
-            };
-
-            const handleToggleStatus = (user) => {
-                if(user.id === 1) return addToast('لا يمكن تعطيل مدير النظام الأساسي', 'error');
-                const newStatus = user.status === 'نشط' ? 'معطل' : 'نشط';
-                updateDb('users', db.users.map(u => u.id === user.id ? { ...u, status: newStatus } : u));
-                addToast(`تم ${newStatus === 'نشط' ? 'تفعيل' : 'تعطيل'} المستخدم`, 'success');
+                resetUserForm();
+                addToast('تمت إضافة المستخدم فعلياً وحفظه في النظام', 'success');
             };
 
             const handleDelete = (id) => {
-                if(id === 1) return addToast('لا يمكن حذف مدير النظام الأساسي', 'error');
+                if(id === 1) return addToast("لا يمكن حذف مدير النظام الأساسي", "error");
                 if(window.confirm('هل أنت متأكد من الحذف؟')){
                     updateDb('users', db.users.filter(u => u.id !== id));
                     addToast('تم الحذف بنجاح', 'success');
@@ -1768,63 +1798,85 @@
                 <div className="space-y-6">
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                         <h2 className="text-2xl font-bold text-gray-800">إدارة المستخدمين والصلاحيات</h2>
-                        <button onClick={openAddUser} className="bg-brand text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 hover:bg-blue-700 shadow-md w-full sm:w-auto"><Icons.Plus /> مستخدم جديد</button>
+                        <button onClick={() => setShowModal(true)} className="bg-brand text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 hover:bg-blue-700 shadow-md w-full sm:w-auto"><Icons.Plus /> مستخدم جديد</button>
                     </div>
 
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
                         <div className="bg-white p-5 rounded-xl border shadow-sm"><p className="text-sm text-gray-500 mb-1">المستخدمين</p><p className="text-2xl font-bold">{db.users.length}</p></div>
                         <div className="bg-white p-5 rounded-xl border shadow-sm"><p className="text-sm text-gray-500 mb-1">النشطون</p><p className="text-2xl font-bold text-green-600">{db.users.filter(u=>u.status==='نشط').length}</p></div>
                         <div className="bg-white p-5 rounded-xl border shadow-sm"><p className="text-sm text-gray-500 mb-1">معطلة</p><p className="text-2xl font-bold text-red-600">{db.users.filter(u=>u.status==='معطل').length}</p></div>
-                        <div className="bg-white p-5 rounded-xl border shadow-sm"><p className="text-sm text-gray-500 mb-1">الأدوار</p><p className="text-2xl font-bold text-blue-600">5</p></div>
                     </div>
 
                     <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden mb-8">
                         <div className="overflow-x-auto">
                             <table className="w-full text-sm text-right crm-table">
-                                <thead><tr><th>الاسم الكامل</th><th>اسم الدخول</th><th>الدور الوظيفي</th><th>الهاتف</th><th>البريد</th><th>آخر دخول</th><th>الحالة</th><th>الإجراءات</th></tr></thead>
+                                <thead><tr><th>الاسم الكامل</th><th>اسم الدخول</th><th>الدور الوظيفي</th><th>الهاتف</th><th>آخر دخول</th><th>الحالة</th><th>الإجراءات</th></tr></thead>
                                 <tbody>
                                     {db.users.map(u => (
                                         <tr key={u.id}>
                                             <td className="font-bold text-gray-800">{u.name}</td><td dir="ltr" className="text-right text-gray-500">{u.username}</td>
                                             <td><span className="px-2 py-1 bg-gray-100 border rounded text-xs font-bold text-gray-700">{u.role}</span></td>
-                                            <td dir="ltr" className="text-right font-medium">{u.phone || '-'}</td><td dir="ltr" className="text-right text-gray-500">{u.email || '-'}</td><td>{u.lastLogin || '-'}</td>
+                                            <td dir="ltr" className="text-right font-medium">{u.phone}</td><td>{u.lastLogin}</td>
                                             <td><span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${u.status === 'نشط' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{u.status}</span></td>
                                             <td>
                                                 <div className="flex gap-3 text-xs font-bold">
-                                                    <button onClick={() => openEditUser(u)} className="text-brand hover:underline">تعديل</button>
-                                                    <button onClick={() => handleToggleStatus(u)} className={`${u.status === 'نشط' ? 'text-red-500' : 'text-green-600'} hover:underline`}>{u.status === 'نشط' ? 'تعطيل' : 'تفعيل'}</button>
+                                                    <button onClick={() => setShowModal(true)} className="text-brand hover:underline">تعديل</button>
+                                                    <button className={`${u.status === 'نشط' ? 'text-red-500' : 'text-green-600'} hover:underline`}>{u.status === 'نشط' ? 'تعطيل' : 'تفعيل'}</button>
                                                     {u.id !== 1 && <button onClick={() => handleDelete(u.id)} className="text-red-600 hover:text-red-800 bg-red-50 px-2 py-1 rounded border border-red-200"><Icons.Trash /></button>}
                                                 </div>
                                             </td>
                                         </tr>
                                     ))}
-                                    {db.users.length === 0 && <tr><td colSpan="8" className="text-center p-8 text-gray-500 font-bold">لا توجد بيانات حالياً</td></tr>}
+                                    {db.users.length === 0 && <tr><td colSpan="7" className="text-center p-8 text-gray-500 font-bold">لا توجد بيانات حالياً</td></tr>}
                                 </tbody>
                             </table>
                         </div>
                     </div>
 
-                    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5 overflow-x-auto">
-                        <h3 className="font-bold text-gray-800 mb-4">مصفوفة الصلاحيات العامة</h3>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-                            {permissionsModules.map(m => <div key={m} className="flex items-center justify-between bg-gray-50 border rounded-lg p-3"><span className="font-bold text-gray-700">{m}</span><span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">عرض / إضافة / تعديل</span></div>)}
-                        </div>
-                    </div>
-
-                    <Modal title={editingUserId ? 'تعديل حساب مستخدم' : 'إنشاء حساب مستخدم جديد'} isOpen={showModal} onClose={() => setShowModal(false)}>
+                    <Modal title="إنشاء حساب مستخدم جديد" isOpen={showModal} onClose={() => { setShowModal(false); resetUserForm(); }}>
                         <div className="space-y-5">
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-                                <div><label className="block text-sm font-bold mb-1 text-gray-700">الاسم الكامل *</label><input type="text" className="w-full border p-3 rounded bg-gray-50" value={userForm.name} onChange={e=>setUserForm({...userForm, name:e.target.value})} placeholder="مثال: أحمد عبد الله" /></div>
-                                <div><label className="block text-sm font-bold mb-1 text-gray-700">اسم الدخول (Username) *</label><input type="text" className="w-full border p-3 rounded bg-gray-50" dir="ltr" value={userForm.username} onChange={e=>setUserForm({...userForm, username:e.target.value})} placeholder="ahmed.a" /></div>
-                                <div><label className="block text-sm font-bold mb-1 text-gray-700">كلمة المرور {editingUserId ? '(اتركها كما هي إذا لا تريد تغييرها)' : '*'}</label><input type="password" className="w-full border p-3 rounded bg-gray-50" value={userForm.password} onChange={e=>setUserForm({...userForm, password:e.target.value})} placeholder="********" /></div>
-                                <div><label className="block text-sm font-bold mb-1 text-gray-700">الدور والصلاحية *</label><select className="w-full border p-3 rounded bg-gray-50" value={userForm.role} onChange={e=>setUserForm({...userForm, role:e.target.value})}><option>موظف الاستقبال</option><option>مدير النظام</option><option>موظف CRM</option><option>مشرف الصيانة</option><option>المحاسب</option></select></div>
-                                <div><label className="block text-sm font-bold mb-1 text-gray-700">رقم الهاتف</label><input type="text" className="w-full border p-3 rounded bg-gray-50" dir="ltr" value={userForm.phone} onChange={e=>setUserForm({...userForm, phone:e.target.value})} placeholder="07900000000" /></div>
-                                <div><label className="block text-sm font-bold mb-1 text-gray-700">البريد الإلكتروني</label><input type="email" className="w-full border p-3 rounded bg-gray-50" dir="ltr" value={userForm.email} onChange={e=>setUserForm({...userForm, email:e.target.value})} placeholder="user@email.com" /></div>
-                                <div><label className="block text-sm font-bold mb-1 text-gray-700">الحالة</label><select className="w-full border p-3 rounded bg-gray-50" value={userForm.status} onChange={e=>setUserForm({...userForm, status:e.target.value})}><option>نشط</option><option>معطل</option></select></div>
+                                <div>
+                                    <label className="block text-sm font-bold mb-1 text-gray-700">الاسم الكامل *</label>
+                                    <input type="text" className="w-full border p-3 rounded bg-gray-50" placeholder="مثال: أحمد عبد الله" value={userForm.name} onChange={e=>setUserForm({...userForm, name:e.target.value})} />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-bold mb-1 text-gray-700">اسم الدخول (Username) *</label>
+                                    <input type="text" className="w-full border p-3 rounded bg-gray-50" dir="ltr" placeholder="ahmed.a" value={userForm.username} onChange={e=>setUserForm({...userForm, username:e.target.value})} />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-bold mb-1 text-gray-700">كلمة المرور *</label>
+                                    <input type="password" className="w-full border p-3 rounded bg-gray-50" placeholder="********" value={userForm.password} onChange={e=>setUserForm({...userForm, password:e.target.value})} />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-bold mb-1 text-gray-700">الدور والصلاحية *</label>
+                                    <select className="w-full border p-3 rounded bg-gray-50" value={userForm.role} onChange={e=>setUserForm({...userForm, role:e.target.value})}>
+                                        <option>موظف الاستقبال</option>
+                                        <option>مدير النظام</option>
+                                        <option>موظف CRM</option>
+                                        <option>مشرف الصيانة</option>
+                                        <option>المحاسب</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-bold mb-1 text-gray-700">رقم الهاتف</label>
+                                    <input type="text" className="w-full border p-3 rounded bg-gray-50" dir="ltr" placeholder="07900000000" value={userForm.phone} onChange={e=>setUserForm({...userForm, phone:e.target.value})} />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-bold mb-1 text-gray-700">البريد الإلكتروني</label>
+                                    <input type="email" className="w-full border p-3 rounded bg-gray-50" dir="ltr" placeholder="name@example.com" value={userForm.email} onChange={e=>setUserForm({...userForm, email:e.target.value})} />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-bold mb-1 text-gray-700">الحالة</label>
+                                    <select className="w-full border p-3 rounded bg-gray-50" value={userForm.status} onChange={e=>setUserForm({...userForm, status:e.target.value})}>
+                                        <option>نشط</option>
+                                        <option>معطل</option>
+                                    </select>
+                                </div>
                             </div>
                             <div className="flex justify-end gap-3 pt-5 border-t mt-5">
-                                <button onClick={() => setShowModal(false)} className="px-6 py-2.5 bg-gray-200 text-gray-800 rounded font-bold hover:bg-gray-300">تجاهل</button>
-                                <button onClick={handleSaveUser} className="px-6 py-2.5 bg-brand text-white rounded font-bold shadow-md hover:bg-blue-700 flex items-center gap-2"><Icons.Check /> حفظ الحساب</button>
+                                <button onClick={() => { setShowModal(false); resetUserForm(); }} className="px-6 py-2.5 bg-gray-200 text-gray-800 rounded font-bold hover:bg-gray-300">تجاهل</button>
+                                <button onClick={handleAddUser} className="px-6 py-2.5 bg-brand text-white rounded font-bold shadow-md hover:bg-blue-700 flex items-center gap-2"><Icons.Check /> حفظ الحساب</button>
                             </div>
                         </div>
                     </Modal>
@@ -1945,7 +1997,7 @@
             const [toast, setToast] = useState(null);
             const [isSidebarOpen, setIsSidebarOpen] = useState(false);
             const [db, setDb] = useState(() => getStoredDb());
-            const [syncStatus, setSyncStatus] = useState(getSupabaseConfig().url ? 'جاري الاتصال...' : 'حفظ محلي فقط');
+            const [syncStatus, setSyncStatus] = useState('جاري الاتصال...');
 
             useEffect(() => {
                 let channel = null; let active = true;
@@ -1971,7 +2023,7 @@
             const updateDb = (collection, newData) => setDb(prev => { const next = { ...prev, [collection]: newData }; queueCloudSave(next, setSyncStatus); return next; });
             const handleViewProfile = (customer) => { setSelectedCustomer(customer); setActiveTab('customers'); };
 
-            if (!isAuthenticated) return <LoginScreen onLogin={handleLogin} users={db.users} />;
+            if (!isAuthenticated) return <LoginScreen onLogin={handleLogin} />;
 
             const tabs = [
                 { id: 'dashboard', name: 'لوحة التحكم', icon: <Icons.Dashboard /> },
